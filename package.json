@@ -1,0 +1,17 @@
+{
+  "name": "aitools",
+  "version": "1.0.0",
+  "description": "A minimal, composable MCP (Model Context Protocol) gateway for LLM tool use. Search the web and fetch content from any URL.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@playwright/mcp": "^0.0.63",
+    "playwright": "^1.59.0-alpha-1770157258000"
+  }
+}
