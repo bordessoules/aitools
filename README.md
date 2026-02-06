@@ -15,11 +15,20 @@ python -m src.gateway -t sse -p 8000
 
 ## Tools
 
+### Web & Content Tools
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
 | `search` | Web search | Finding information, discovering URLs |
 | `fetch` | Retrieve content | Getting content from any URL |
 | `fetch_section` | Get document section | When fetch returns a table of contents |
+
+### Knowledge Base Tools (Requires OpenSearch)
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `fetch(url, add_to_kb=True)` | Add to knowledge base | When you want to save a document for later search |
+| `kb_search` | Search knowledge base | Finding information in previously saved documents |
+| `kb_list` | List saved documents | See what's in your knowledge base |
+| `kb_remove` | Remove document | Clean up the knowledge base |
 
 ## Usage Examples
 
@@ -46,6 +55,24 @@ LLM: fetch("https://example.com/encyclopedia.pdf")
 
 LLM: fetch_section("https://example.com/encyclopedia.pdf", section=15)
 → Gets section 15 content about quantum physics
+```
+
+### Building a Knowledge Base
+```
+User: "I want to research LLMs. Please add these papers to my knowledge base:
+       - Attention is All You Need
+       - The Llama 3 Herd"
+
+LLM: fetch("https://arxiv.org/abs/1706.03762", add_to_kb=True)
+→ Fetches and adds to knowledge base
+
+LLM: fetch("https://arxiv.org/abs/2407.21783", add_to_kb=True)
+→ Fetches and adds to knowledge base
+
+User: "What do these papers say about training efficiency?"
+
+LLM: kb_search("training efficiency techniques")
+→ Searches both papers and returns relevant snippets
 ```
 
 ### Direct URL Fetch
@@ -148,8 +175,11 @@ python setup.py
 cp .env.example .env
 # Edit .env with your settings
 
-# Start services
+# Start required services (SearXNG for search)
 docker-compose --profile gpu up -d  # in searxng-mcp directory
+
+# Optional: Start OpenSearch for knowledge base
+docker compose -f docker-compose.opensearch.yml up -d
 
 # Start gateway
 python -m src.gateway -t sse -p 8000

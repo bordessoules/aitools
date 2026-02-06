@@ -71,6 +71,46 @@ async def test_http_fallback_direct():
         return False
 
 
+async def test_kb():
+    """Test knowledge base operations."""
+    print("\n" + "=" * 60)
+    print("TEST: Knowledge Base")
+    print("=" * 60)
+    try:
+        # Check if OpenSearch is available
+        from knowledge_base import is_available
+        available = await is_available()
+        if not available:
+            print("[SKIP] OpenSearch not running (start with: docker compose -f docker-compose.opensearch.yml up -d)")
+            return True  # Not a failure, just skipped
+        
+        print("OpenSearch is available!")
+        
+        # Test adding a document
+        from knowledge_base import add_document, search, remove_document
+        result = await add_document(
+            "https://example.com/test",
+            "Test Document",
+            "This is a test document about artificial intelligence and machine learning.",
+            [{"heading": "Introduction", "text": "AI is cool", "tokens": 10}],
+            "test"
+        )
+        print(f"Add result: {result}")
+        
+        # Test searching
+        result = await search("artificial intelligence")
+        print(f"Search result: {result[:300]}...")
+        
+        # Cleanup
+        await remove_document("https://example.com/test")
+        
+        print("\n[OK] Knowledge base works!")
+        return True
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return False
+
+
 async def main():
     print("\n" + "=" * 60)
     print("MCP GATEWAY - TOOL TEST")
@@ -82,6 +122,7 @@ async def main():
     results["http_fallback_direct"] = await test_http_fallback_direct()
     results["fetch_http_fallback"] = await test_fetch_http_fallback()
     results["fetch_github"] = await test_fetch_github()
+    results["knowledge_base"] = await test_kb()
     
     # Summary
     print("\n" + "=" * 60)
