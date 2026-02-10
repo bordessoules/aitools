@@ -1,0 +1,204 @@
+# MCP Gateway - Unified Docker Deployment
+# 
+# QUICK START:
+#   1. Choose your deployment profile (see below)
+#   2. Copy .env.example to .env and adjust settings
+#   3. Run: docker compose --profile <PROFILE> up -d
+#
+# DEPLOYMENT PROFILES:
+#   minimal  - Gateway + Search only (lightest, MarkItDown only)
+#   standard - +Knowledge Base (OpenSearch, no Docling)
+#   cpu      - +Docling CPU (full features, no GPU needed)
+#   gpu      - +Docling GPU (best performance, requires NVIDIA GPU)
+#
+# EXAMPLES:
+#   docker compose --profile minimal up -d
+#   docker compose --profile standard up -d
+#   docker compose --profile cpu up -d
+#   docker compose --profile gpu up -d
+
+services:
+  # ============================================================================
+  # MCP GATEWAY (Required - always started)
+  # ============================================================================
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-gateway
+    ports:
+      - "${GATEWAY_PORT:-8000}:8000"
+    environment:
+      # Service URLs (internal Docker network)
+      - SEARXNG_URL=http://searxng:8080
+      - OPENSEARCH_URL=http://opensearch:9200
+      - DOCLING_URL=http://docling-cpu:5001
+      - DOCLING_GPU_URL=http://docling-gpu:5001
+
+      # Vision API (for picture descriptions and web extraction)
+      - VISION_API_URL=${VISION_API_URL:-}
+      - VISION_API_KEY=${VISION_API_KEY:-not-needed}
+      - VISION_MODEL=${VISION_MODEL:-qwen3-vl-4b}
+
+      # Docling configuration
+      - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
+      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-vlm}
+      - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
+
+      # Other settings
+      - PLAYWRIGHT_MCP_TOKEN=${PLAYWRIGHT_MCP_TOKEN:-}
+      - CACHE_DIR=/app/cache
+    volumes:
+      - ./cache:/app/cache
+      - ./.env:/app/.env:ro
+    depends_on:
+      searxng:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+        required: false
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    # Allow connecting to services on host (LM Studio, etc.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
+  # ============================================================================
+  # SEARXNG - Search Engine (Required - included in all profiles)
+  # ============================================================================
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: mcp-searxng
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    volumes:
+      - searxng-data:/etc/searxng
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+      # - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-mcp-gateway-secret-key}
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # OPENSEARCH - Knowledge Base (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: mcp-opensearch
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # DOCLING CPU - Document processing without GPU (optional, included in: cpu)
+  # ============================================================================
+  docling-cpu:
+    image: quay.io/docling-project/docling-serve-cpu:latest
+    container_name: mcp-docling-cpu
+    profiles:
+      - cpu
+    environment:
+      - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+    ports:
+      - "${DOCLING_CPU_PORT:-5001}:5001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # DOCLING GPU - Document processing with GPU (optional, included in: gpu)
+  # Requires NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+  # ============================================================================
+  docling-gpu:
+    image: quay.io/docling-project/docling-serve-cu128:latest
+    container_name: mcp-docling-gpu
+    profiles:
+      - gpu
+    environment:
+      - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+    ports:
+      - "${DOCLING_GPU_PORT:-5001}:5001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # OPTIONAL: OpenSearch Dashboards (for debugging KB, included in: standard, cpu, gpu)
+  # ============================================================================
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    container_name: mcp-opensearch-dashboards
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - "${DASHBOARDS_PORT:-5601}:5601"
+    depends_on:
+      - opensearch
+    networks:
+      - mcp-network
+    restart: unless-stopped
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  searxng-data:
+  opensearch-data:

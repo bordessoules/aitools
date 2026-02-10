@@ -58,15 +58,31 @@ async def search(query: str, max_results: int = 10) -> str:
     """Search the web via SearXNG."""
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SEARCH) as client:
+            # Headers to satisfy SearXNG bot detection
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "MCP-Gateway/1.0",
+                "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1"
+            }
+            
             resp = await client.get(
                 f"{SEARXNG_URL}/search",
                 params={"q": query, "format": "json", "pageno": 1},
-                headers={"X-Forwarded-For": "127.0.0.1"}
+                headers=headers
             )
+            
+            # Handle 403 specifically
+            if resp.status_code == 403:
+                return f"Search error: SearXNG returned 403 Forbidden.\n\nPossible fixes:\n1. Check SearXNG is running: docker ps | grep searxng\n2. Verify limiter.toml allows Docker networks\n3. Check SEARXNG_URL in .env matches your setup\n\nCurrent URL: {SEARXNG_URL}"
+            
             resp.raise_for_status()
             data = resp.json()
             
             results = data.get("results", [])[:max_results]
+            if not results:
+                return f"Search: '{query}'\nNo results found."
+            
             lines = [f"Search: '{query}'\n"]
             
             for i, r in enumerate(results, 1):
@@ -76,5 +92,7 @@ async def search(query: str, max_results: int = 10) -> str:
                 lines.append(f"{i}. {title}\n   {url}\n   {snippet}...\n")
             
             return "\n".join(lines)
+    except httpx.ConnectError as e:
+        return f"Search error: Cannot connect to SearXNG at {SEARXNG_URL}.\n\nIs SearXNG running?\nStart with: docker compose up -d searxng"
     except Exception as e:
-        return f"Search error: {e}"
+        return f"Search error: {type(e).__name__}: {e}"

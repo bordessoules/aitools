@@ -1,14 +1,12 @@
 """
-Content fetching with browser, vision AI, and LLM processing.
+Content fetching with deployment-flexible extraction.
 
-Web page extraction strategy:
-1. Browser renders page (JavaScript executes)
-2. Extract FULL accessibility tree text (not truncated)
-3. Use markdownify/readability to convert to clean markdown
-4. Chunk the same way as PDFs (heading-aware)
-5. Cache and serve with TOC
+Supports 3 deployment tiers:
+1. Full: Chrome + Qwen vision (best quality, local dev)
+2. Docker: Docker Playwright with auth support (cloud-friendly)
+3. Minimal: MarkItDown only (fastest, works anywhere)
 
-This matches the PDF/doc pipeline exactly.
+Automatically detects available services and degrades gracefully.
 """
 
 import asyncio
@@ -23,89 +21,273 @@ from mcp.client.stdio import stdio_client
 import config
 import documents
 
+# Import MarkItDown for deployment flexibility
+try:
+    from markitdown_client import convert_file as md_convert_file
+    MARKITDOWN_AVAILABLE = True
+except ImportError:
+    MARKITDOWN_AVAILABLE = False
 
-async def get_webpage(url: str, section: int = None) -> str:
-    """
-    Fetch webpage content with full extraction and smart size handling.
+# Feature flags (set at startup)
+VISION_AVAILABLE = None
+MARKITDOWN_WEB_AVAILABLE = None
+DOCKER_PLAYWRIGHT_AVAILABLE = None
+
+# Prompt for vision-based extraction
+WEB_VISION_PROMPT = """Extract the main article/content from this webpage screenshot as clean, structured markdown.
+
+Instructions:
+1. Focus on the MAIN CONTENT (article, documentation, post)
+2. IGNORE: navigation menus, sidebars, ads, footers, cookie banners
+3. Preserve structure: headings (# ## ###), lists (- *), code blocks (```)
+4. Extract all meaningful text content
+5. If there's a code example, preserve it exactly
+6. If there's a table, format it as markdown table
+
+Output format:
+# [Title]
+
+[Main content in markdown format...]
+
+If the page appears to be a login page, error page, or CAPTCHA, respond with: "ERROR: [reason]"
+"""
+
+
+async def check_vision_available() -> bool:
+    """Check if vision-based extraction is available (Chrome + Qwen)."""
+    global VISION_AVAILABLE
+    if VISION_AVAILABLE is not None:
+        return VISION_AVAILABLE
+
+    # Check 0: Vision API URL must be configured
+    if not config.VISION_API_URL:
+        print("[Setup] VISION_API_URL not configured, vision disabled")
+        VISION_AVAILABLE = False
+        return False
+
+    # Check 1: Playwright MCP Chrome extension
+    try:
+        project_root = Path(__file__).parent.parent
+        cmd = str(project_root / "node_modules" / ".bin" / "playwright-mcp.cmd") if os.name == 'nt' else str(project_root / "node_modules" / ".bin" / "playwright-mcp")
+
+        if not Path(cmd).exists():
+            print("[Setup] Playwright MCP not found")
+            VISION_AVAILABLE = False
+            return False
+    except Exception as e:
+        print(f"[Setup] Playwright check failed: {e}")
+        VISION_AVAILABLE = False
+        return False
+
+    # Check 2: Vision API with vision model
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{config.VISION_API_URL}/models")
+            if resp.status_code != 200:
+                print("[Setup] Vision API not available")
+                VISION_AVAILABLE = False
+                return False
+            
+            data = resp.json()
+            models = data.get("data", [])
+            vision_models = [m for m in models if any(v in m.get("id", "").lower() for v in ["vl", "vision", "qwen3-vl"])]
+            
+            if not vision_models:
+                print("[Setup] No vision models found in LM Studio")
+                VISION_AVAILABLE = False
+                return False
+            
+            print(f"[Setup] Vision available: Chrome + {vision_models[0]['id']}")
+            VISION_AVAILABLE = True
+            return True
+            
+    except Exception as e:
+        print(f"[Setup] Vision LLM check failed: {e}")
+        VISION_AVAILABLE = False
+        return False
+
+
+async def check_markitdown_web_available() -> bool:
+    """Check if MarkItDown can handle web pages."""
+    global MARKITDOWN_WEB_AVAILABLE
+    if MARKITDOWN_WEB_AVAILABLE is not None:
+        return MARKITDOWN_WEB_AVAILABLE
     
-    Strategy:
-    1. Browse with Playwright (JS renders)
-    2. Extract full accessibility tree text
-    3. Convert to clean markdown
-    4. Cache and return content or TOC
+    MARKITDOWN_WEB_AVAILABLE = MARKITDOWN_AVAILABLE
+    return MARKITDOWN_WEB_AVAILABLE
+
+
+async def check_docker_playwright_available() -> bool:
+    """Check if Docker Playwright is available."""
+    global DOCKER_PLAYWRIGHT_AVAILABLE
+    if DOCKER_PLAYWRIGHT_AVAILABLE is not None:
+        return DOCKER_PLAYWRIGHT_AVAILABLE
+    
+    try:
+        from docker_playwright import is_available
+        DOCKER_PLAYWRIGHT_AVAILABLE = await is_available()
+        return DOCKER_PLAYWRIGHT_AVAILABLE
+    except ImportError:
+        DOCKER_PLAYWRIGHT_AVAILABLE = False
+        return False
+
+
+async def get_webpage(url: str, section: int = None, force_method: str = None) -> str:
+    """
+    Fetch webpage with deployment-flexible extraction.
+    
+    Args:
+        url: URL to fetch
+        section: Optional section number for large documents
+        force_method: Force specific method ("vision", "docker_playwright", "markitdown")
+                     Overrides WEB_EXTRACTION_METHOD config
+    
+    Extraction methods (in order of preference):
+    1. Vision (Chrome + Qwen) - best quality, requires Chrome extension
+    2. Docker Playwright - full browser in Docker, auth support
+    3. MarkItDown - fast, works everywhere, good quality
     """
     # Check cache first
     cached = documents.get(url)
-    
     if cached is not None:
-        # If section specified, return that chunk
         if section is not None:
             return documents.format_chunk(cached, section)
         
-        # Check size - return full or TOC
         content = cached.full_text()
         estimated_tokens = len(content) // config.CHARS_PER_TOKEN
-        
         if estimated_tokens <= config.AUTO_FULL_THRESHOLD_TOKENS:
             return content
-        
         return documents.format_toc(cached)
     
-    # Direct fetch for raw files
+    # Raw files: direct fetch
     if url.endswith('.md') or url.startswith('https://raw.githubusercontent.com'):
         text = await _fetch_text_direct(url)
         if text:
             documents.save(url, _extract_title(text), text)
             cached = documents.get(url)
-            
             if section is not None:
                 return documents.format_chunk(cached, section)
-            
             content = cached.full_text()
             estimated_tokens = len(content) // config.CHARS_PER_TOKEN
             if estimated_tokens <= config.AUTO_FULL_THRESHOLD_TOKENS:
                 return content
             return documents.format_toc(cached)
     
-    # Full browser extraction for web pages
-    result = await browse(url)
+    # Determine which method to use
+    method = force_method or config.WEB_EXTRACTION_METHOD
+    has_vision = await check_vision_available()
+    has_markitdown = await check_markitdown_web_available()
+    has_docker_playwright = await check_docker_playwright_available()
     
-    if result.get("error"):
-        # Browser failed - fallback to direct HTTP fetch
-        print(f"Browser failed: {result['error']}, falling back to HTTP")
-        text = await _fetch_html_as_text(url)
-        if not text:
-            return f"Error: Browser failed ({result['error']}) and HTTP fallback also failed."
-    else:
-        text = result.get("content", "")
+    markdown = None
+    extraction_method = None
+    errors = []
     
-    if not text:
-        return "Error: No content retrieved from page"
+    # Method selection based on preference
+    if method == "vision":
+        if has_vision:
+            try:
+                print(f"[Web] Vision extraction for: {url[:60]}...")
+                result = await _extract_with_vision(url)
+                if result and len(result) > 200:
+                    markdown = result
+                    extraction_method = 'vision'
+            except Exception as e:
+                errors.append(f"Vision: {e}")
+        else:
+            errors.append("Vision: Chrome extension not available")
     
-    # Convert to markdown and cache
-    markdown = _clean_webpage_content(text, url)
-    documents.save(url, _extract_title(markdown), markdown)
+    elif method == "docker_playwright":
+        if has_docker_playwright:
+            try:
+                print(f"[Web] Docker Playwright for: {url[:60]}...")
+                from docker_playwright import extract_webpage
+                html = await extract_webpage(url, wait_for_js=config.WEB_WAIT_FOR_JS)
+                if html and len(html) > 500:
+                    markdown = _html_to_markdown(html, url)
+                    extraction_method = 'docker_playwright'
+                    print(f"[Web] OK: Docker Playwright: {len(markdown)} chars")
+            except Exception as e:
+                errors.append(f"Docker Playwright: {e}")
+        else:
+            errors.append("Docker Playwright: Not available")
+    
+    elif method == "markitdown":
+        if has_markitdown:
+            try:
+                print(f"[Web] MarkItDown for: {url[:60]}...")
+                result = await asyncio.to_thread(md_convert_file, url, use_vision=False)
+                if result.get('success') and len(result.get('text_content', '')) > 500:
+                    markdown = result['text_content']
+                    extraction_method = 'markitdown'
+            except Exception as e:
+                errors.append(f"MarkItDown: {e}")
+        else:
+            errors.append("MarkItDown: Not available")
+    
+    else:  # auto - try all methods in order
+        # Tier 1: Vision extraction (best quality - local Chrome)
+        if has_vision:
+            try:
+                print(f"[Web] Trying vision extraction for: {url[:60]}...")
+                result = await _extract_with_vision(url)
+                if result and len(result) > 200:
+                    markdown = result
+                    extraction_method = 'vision'
+                    print(f"[Web] OK: Vision: {len(markdown)} chars")
+            except Exception as e:
+                errors.append(f"Vision: {e}")
+                print(f"[Web] FAIL: Vision failed, trying next...")
+        
+        # Tier 2: Docker Playwright (Docker with auth support)
+        if not markdown and has_docker_playwright:
+            try:
+                print(f"[Web] Trying Docker Playwright for: {url[:60]}...")
+                from docker_playwright import extract_webpage
+                html = await extract_webpage(url, wait_for_js=config.WEB_WAIT_FOR_JS)
+                if html and len(html) > 500:
+                    markdown = _html_to_markdown(html, url)
+                    extraction_method = 'docker_playwright'
+                    print(f"[Web] OK: Docker Playwright: {len(markdown)} chars")
+            except Exception as e:
+                errors.append(f"Docker Playwright: {e}")
+                print(f"[Web] FAIL: Docker Playwright failed, trying next...")
+        
+        # Tier 3: MarkItDown (final fallback - works everywhere)
+        if not markdown and has_markitdown:
+            try:
+                print(f"[Web] Trying MarkItDown for: {url[:60]}...")
+                result = await asyncio.to_thread(md_convert_file, url, use_vision=False)
+                if result.get('success') and len(result.get('text_content', '')) > 500:
+                    markdown = result['text_content']
+                    extraction_method = 'markitdown'
+                    print(f"[Web] OK: MarkItDown: {len(markdown)} chars")
+            except Exception as e:
+                errors.append(f"MarkItDown: {e}")
+    
+    if not markdown:
+        error_msg = "; ".join(errors) if errors else "All methods failed"
+        return _safe_text(f"Error: Failed to extract content from {url}. {error_msg}")
+    
+    # Add extraction metadata
+    markdown = f"<!-- Extracted via: {extraction_method} -->\n\n{markdown}"
+    
+    # Save to cache with backend tracking
+    documents.save(url, _extract_title(markdown), markdown, extraction_method)
     cached = documents.get(url)
     
     if section is not None:
-        return documents.format_chunk(cached, section)
-    
+        return _safe_text(documents.format_chunk(cached, section))
+
     content = cached.full_text()
     estimated_tokens = len(content) // config.CHARS_PER_TOKEN
     if estimated_tokens <= config.AUTO_FULL_THRESHOLD_TOKENS:
-        return content
-    return documents.format_toc(cached)
+        return _safe_text(content)
+    return _safe_text(documents.format_toc(cached))
 
 
-async def browse(url: str) -> dict:
-    """
-    Browse URL and extract full content using Playwright MCP.
-    
-    Uses browser_snapshot which provides the accessibility tree -
-    this is better than screenshots because it gives us structured text
-    that can be extracted completely (not truncated).
-    """
-    # Get project root (parent of src/)
+async def _extract_with_vision(url: str) -> str | None:
+    """Extract webpage content using Chrome + Qwen3-VL."""
     project_root = Path(__file__).parent.parent
     
     env = {
@@ -113,14 +295,7 @@ async def browse(url: str) -> dict:
         "HOME": os.environ.get("HOME", ""),
     }
     
-    # Use locally installed playwright-mcp instead of npx
-    # On Windows: node_modules/.bin/playwright-mcp.cmd
-    # On Linux/Mac: node_modules/.bin/playwright-mcp
-    if os.name == 'nt':  # Windows
-        cmd = str(project_root / "node_modules" / ".bin" / "playwright-mcp.cmd")
-    else:
-        cmd = str(project_root / "node_modules" / ".bin" / "playwright-mcp")
-    
+    cmd = str(project_root / "node_modules" / ".bin" / "playwright-mcp.cmd") if os.name == 'nt' else str(project_root / "node_modules" / ".bin" / "playwright-mcp")
     args = ["--extension"]
     
     if config.PLAYWRIGHT_MCP_TOKEN:
@@ -132,71 +307,67 @@ async def browse(url: str) -> dict:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 
-                # Navigate and wait for JS
+                # Navigate
+                print(f"[Vision] Navigating to {url[:60]}...")
                 await session.call_tool("browser_navigate", {"url": url})
-                await asyncio.sleep(2)
                 
-                # Get full accessibility snapshot (structured text)
-                snapshot = await session.call_tool("browser_snapshot", {})
+                # Wait for page to load (configurable)
+                wait_time = 5 if config.WEB_WAIT_FOR_JS else 1
+                await asyncio.sleep(wait_time)
                 
-                # Extract ALL text from snapshot (not truncated)
-                full_text = ""
-                for item in snapshot.content:
+                # Optional: Scroll to load lazy content
+                if config.WEB_WAIT_FOR_JS:
+                    try:
+                        await session.call_tool("browser_scroll", {"direction": "down", "amount": 500})
+                        await asyncio.sleep(1)
+                    except:
+                        pass  # Scroll may fail on some pages
+                
+                # Take screenshot
+                print(f"[Vision] Taking screenshot...")
+                screenshot_result = await session.call_tool("browser_take_screenshot", {})
+                
+                # Extract image data from result
+                screenshot_b64 = None
+                for item in screenshot_result.content:
+                    # Handle ImageContent (new format) - data is already base64 string
+                    if hasattr(item, 'data') and item.data:
+                        if isinstance(item.data, str):
+                            screenshot_b64 = item.data
+                        else:
+                            screenshot_b64 = base64.b64encode(item.data).decode()
+                        break
+                    # Handle TextContent with data URL
                     if hasattr(item, 'text') and item.text:
-                        full_text += item.text + "\n"
+                        text = item.text
+                        if text.startswith('data:image'):
+                            screenshot_b64 = text.split(',')[1] if ',' in text else text
+                            break
+                        elif text.startswith('http'):
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.get(text)
+                                screenshot_b64 = base64.b64encode(resp.content).decode()
+                                break
                 
-                return {"content": full_text, "url": url}
+                if not screenshot_b64:
+                    print("[Vision] No screenshot data found")
+                    return None
+                
+                # Send to Qwen3-VL
+                messages = [
+                    {"role": "system", "content": "You are a web content extraction expert."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": WEB_VISION_PROMPT},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
+                    ]}
+                ]
+
+                # Use configured sampling parameters
+                return await _call_llm(messages, max_tokens=8000)
+                    
     except Exception as e:
-        return {"error": str(e), "content": "", "url": url}
-
-
-def _clean_webpage_content(raw_text: str, url: str) -> str:
-    """
-    Convert raw accessibility tree text to clean markdown.
-    
-    The accessibility tree contains structural information that we can
-    use to reconstruct headings, lists, etc.
-    """
-    lines = raw_text.split('\n')
-    markdown_lines = []
-    prev_line = ""
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Skip common junk
-        if any(junk in line.lower() for junk in [
-            'accept cookies', 'cookie consent', 'privacy policy',
-            'terms of service', 'sign up', 'log in', 'subscribe',
-            'advertisement', 'sponsored', 'close menu'
-        ]):
-            continue
-        
-        # Heuristic: short all-caps lines might be headings
-        if line.isupper() and len(line) < 100 and len(line) > 3:
-            markdown_lines.append(f"## {line.title()}")
-        # Longer lines might be paragraphs
-        elif len(line) > 50:
-            if prev_line and len(prev_line) > 50:
-                markdown_lines.append("")  # Paragraph break
-            markdown_lines.append(line)
-        # Short lines might be list items or nav
-        elif line.startswith(('•', '-', '*', '1.', '2.')):
-            markdown_lines.append(line)
-        else:
-            # Treat as potential heading or keep as-is
-            if len(line) < 60 and not prev_line:
-                markdown_lines.append(f"### {line}")
-            else:
-                markdown_lines.append(line)
-        
-        prev_line = line
-    
-    # Add source
-    markdown = '\n'.join(markdown_lines)
-    return f"Source: {url}\n\n{markdown}"
+        print(f"[Vision Extract Error] {e}")
+        return None
 
 
 async def describe_image(url: str, prompt: str = "Describe this image in detail.") -> str:
@@ -206,56 +377,61 @@ async def describe_image(url: str, prompt: str = "Describe this image in detail.
             resp = await client.get(url)
             resp.raise_for_status()
             img_b64 = base64.b64encode(resp.content).decode()
-        
+
         messages = [
-            {"role": "system", "content": "You are a vision analysis assistant. Describe images accurately, noting key details, text content, diagrams, charts, and visual elements."},
+            {"role": "system", "content": "You are a vision analysis assistant."},
             {"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
             ]}
         ]
-        
-        result = await _call_llm(messages, max_tokens=config.VLM_MAX_TOKENS, use_vision_params=True)
+
+        result = await _call_llm(messages)
         return _safe_text(result or "Could not describe image.")
     except Exception as e:
         return f"Image error: {e}"
 
 
-async def _call_llm(
-    messages: list, 
-    model: str = "local",
-    max_tokens: int = None,
-    use_vision_params: bool = False
-) -> str | None:
-    """Call LM Studio API."""
-    if use_vision_params:
-        params = {
-            "model": model,
-            "messages": messages,
-            "temperature": config.VLM_TEMPERATURE,
-            "top_p": config.VLM_TOP_P,
-            "top_k": config.VLM_TOP_K,
-            "repetition_penalty": config.VLM_REPETITION_PENALTY,
-            "presence_penalty": config.VLM_PRESENCE_PENALTY,
-            "max_tokens": max_tokens or config.VLM_MAX_TOKENS,
-            "stream": False
-        }
-    else:
-        params = {
-            "model": model,
-            "messages": messages,
-            "temperature": config.LLM_TEMPERATURE,
-            "top_p": config.LLM_TOP_P,
-            "top_k": config.LLM_TOP_K,
-            "repetition_penalty": config.LLM_REPETITION_PENALTY,
-            "presence_penalty": config.LLM_PRESENCE_PENALTY,
-            "max_tokens": max_tokens or config.LLM_MAX_TOKENS,
-            "stream": False
-        }
-    
+def _build_llm_params(messages: list, max_tokens: int = None) -> dict:
+    """Build vision API params with explicit sampling from config."""
+    params = {
+        "model": config.VISION_MODEL,  # Vision model (e.g., qwen3-vl-4b, gpt-4-vision)
+        "messages": messages,
+        "stream": False
+    }
+
+    # Add all configured sampling parameters (override wrapper defaults)
+    if config.VLM_TEMPERATURE is not None:
+        params["temperature"] = config.VLM_TEMPERATURE
+    if config.VLM_TOP_P is not None:
+        params["top_p"] = config.VLM_TOP_P
+    if config.VLM_TOP_K is not None:
+        params["top_k"] = config.VLM_TOP_K
+    if config.VLM_PRESENCE_PENALTY is not None:
+        params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
+    if config.VLM_REPETITION_PENALTY is not None:
+        params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
+
+    # Max tokens
+    if max_tokens:
+        params["max_tokens"] = max_tokens
+    elif config.VLM_MAX_TOKENS is not None:
+        params["max_tokens"] = config.VLM_MAX_TOKENS
+
+    return params
+
+
+async def _call_llm(messages: list, max_tokens: int = None) -> str | None:
+    """Call vision API with configured sampling parameters."""
+    if not config.VISION_API_URL:
+        print("Vision API error: VISION_API_URL not configured")
+        return None
+
+    params = _build_llm_params(messages, max_tokens)
+
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_LLM) as client:
-            resp = await client.post(f"{config.LMSTUDIO_URL}/chat/completions", json=params)
+            resp = await client.post(f"{config.VISION_API_URL}/chat/completions", json=params)
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
@@ -265,18 +441,15 @@ async def _call_llm(
 
 
 async def _fetch_text_direct(url: str) -> str | None:
-    """Fetch text directly (for markdown, raw files)."""
+    """Fetch text directly."""
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_BROWSER, follow_redirects=True) as client:
             resp = await client.get(url)
-            
-            # GitHub main->master fallback
             if resp.status_code == 404 and 'main/README.md' in url:
                 master_url = url.replace('/main/README.md', '/master/README.md')
                 resp = await client.get(master_url)
                 if resp.status_code == 200:
                     return resp.text
-            
             resp.raise_for_status()
             return resp.text
     except Exception as e:
@@ -285,7 +458,7 @@ async def _fetch_text_direct(url: str) -> str | None:
 
 
 async def _fetch_html_as_text(url: str) -> str | None:
-    """Fetch HTML and convert to plain text (fallback when browser fails)."""
+    """Fetch HTML and convert to text."""
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_BROWSER, follow_redirects=True) as client:
             resp = await client.get(url, headers={
@@ -293,18 +466,12 @@ async def _fetch_html_as_text(url: str) -> str | None:
             })
             resp.raise_for_status()
             html = resp.text
-            
-            # Simple HTML to text conversion
-            # Remove script and style tags
             html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
             html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
-            # Remove tags but preserve newlines for block elements
             html = re.sub(r'<(br|p|div|h[1-6]|li|tr)[^>]*>', '\n', html, flags=re.IGNORECASE)
             html = re.sub(r'<[^>]+>', '', html)
-            # Unescape entities
             html = html.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
             html = html.replace('&quot;', '"').replace('&#39;', "'")
-            # Collapse whitespace
             lines = [line.strip() for line in html.split('\n') if line.strip()]
             return '\n'.join(lines)
     except Exception as e:
@@ -312,15 +479,47 @@ async def _fetch_html_as_text(url: str) -> str | None:
         return None
 
 
+def _html_to_markdown(html: str, url: str) -> str:
+    """Convert HTML to markdown (fallback when MarkItDown not available)."""
+    import html as html_module
+
+    # Simple HTML to text conversion
+    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<nav[^>]*>.*?</nav>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<header[^>]*>.*?</header>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<footer[^>]*>.*?</footer>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Convert common tags
+    text = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<h4[^>]*>(.*?)</h4>', r'#### \1\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.IGNORECASE)
+    text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text, flags=re.IGNORECASE)
+    text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.IGNORECASE)
+    text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.IGNORECASE)
+    text = re.sub(r'<code[^>]*>(.*?)</code>', r'`\1`', text, flags=re.IGNORECASE)
+    text = re.sub(r'<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.IGNORECASE)
+    text = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<li[^>]*>(.*?)</li>', r'- \1\n', text, flags=re.IGNORECASE)
+    
+    # Remove remaining tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Decode HTML entities
+    text = html_module.unescape(text)
+    
+    # Clean up
+    lines = [line.strip() for line in text.split('\n')]
+    lines = [line for line in lines if line]
+    
+    return f"Source: {url}\n\n" + '\n'.join(lines)
+
+
 def _safe_text(text: str) -> str:
     """Remove problematic Unicode."""
-    replacements = {
-        '\U0001f525': '[fire]', '\U0001f680': '[rocket]', '\u2217': '*',
-        '\u2013': '-', '\u2014': '--', '\u2018': "'", '\u2019': "'",
-        '\u201c': '"', '\u201d': '"', '\u2705': '[check]',
-    }
-    for char, repl in replacements.items():
-        text = text.replace(char, repl)
     return text.encode('ascii', 'ignore').decode('ascii')
 
 

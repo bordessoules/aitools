@@ -3,6 +3,9 @@ Document caching with SQLite storage and chunking.
 
 Caches parsed documents to avoid re-downloading and re-parsing.
 Provides chunked access for large documents to stay under MCP size limits.
+
+Uses Docling as primary parser (GPU-accelerated), with MarkItDown as fallback
+for formats Docling doesn't support (audio, YouTube, EPUB, etc.).
 """
 
 import hashlib
@@ -14,6 +17,96 @@ from pathlib import Path
 import httpx
 import config
 
+# Import MarkItDown client for fallback support
+try:
+    from markitdown_client import should_use_markitdown, convert_file as md_convert_file
+    MARKITDOWN_AVAILABLE = True
+except ImportError:
+    MARKITDOWN_AVAILABLE = False
+
+
+def _build_vision_params() -> dict:
+    """Build vision model sampling parameters from config."""
+    params = {"model": config.VISION_MODEL}
+
+    if config.VLM_TEMPERATURE is not None:
+        params["temperature"] = config.VLM_TEMPERATURE
+    if config.VLM_TOP_P is not None:
+        params["top_p"] = config.VLM_TOP_P
+    if config.VLM_TOP_K is not None:
+        params["top_k"] = config.VLM_TOP_K
+    if config.VLM_MAX_TOKENS is not None:
+        params["max_completion_tokens"] = config.VLM_MAX_TOKENS
+    if config.VLM_PRESENCE_PENALTY is not None:
+        params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
+    if config.VLM_REPETITION_PENALTY is not None:
+        params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
+
+    return params
+
+
+def _build_auth_headers() -> dict:
+    """Build authorization headers for vision API calls."""
+    if config.VISION_API_KEY and config.VISION_API_KEY != "not-needed":
+        return {"Authorization": f"Bearer {config.VISION_API_KEY}"}
+    return {}
+
+
+def _build_docling_options() -> dict:
+    """
+    Build Docling conversion options based on pipeline mode.
+
+    Pipeline modes:
+        - "vlm": Granite-258M runs LOCALLY in container (fast, best quality)
+                 Picture descriptions optionally use VISION_API_URL
+        - "standard": EasyOCR + Tableformer (lighter, no VLM needed)
+
+    Returns:
+        dict with conversion options for Docling API
+    """
+    options = {
+        "to_formats": ["md"],
+        "image_export_mode": "placeholder",
+        "document_timeout": config.TIMEOUT_DOCLING,
+    }
+
+    if config.DOCLING_PIPELINE == "vlm":
+        # VLM pipeline: Granite-258M runs locally in container
+        options["pipeline"] = "vlm"
+        options["vlm_pipeline_model_local"] = {
+            "repo_id": config.DOCLING_VLM_REPO_ID,
+            "inference_framework": "transformers",
+            "transformers_model_type": "automodel-imagetexttotext",
+            "prompt": "Convert this page to docling.",
+            "response_format": "doctags",
+            "scale": 2.0,
+            "temperature": 0.0,
+            "extra_generation_config": {
+                "skip_special_tokens": False,
+                "max_new_tokens": config.DOCLING_VLM_MAX_TOKENS
+            }
+        }
+
+    else:
+        # Standard pipeline: EasyOCR + Tableformer
+        options["do_ocr"] = True
+        options["ocr_engine"] = config.DOCLING_OCR_ENGINE
+        options["table_mode"] = "accurate"
+        options["do_table_structure"] = True
+
+    # Picture descriptions via Vision API (works with both pipelines)
+    if config.DOCLING_DO_PICTURE_DESCRIPTION and config.VISION_API_URL:
+        options["do_picture_description"] = True
+        options["picture_description_api"] = {
+            "url": f"{config.VISION_API_URL}/chat/completions",
+            "params": _build_vision_params(),
+            "timeout": config.TIMEOUT_LLM,
+            "headers": _build_auth_headers(),
+            "prompt": "Describe this image in detail, including any text, diagrams, charts, or visual elements.",
+        }
+
+    return options
+
 
 @dataclass
 class Doc:
@@ -22,6 +115,7 @@ class Doc:
     title: str
     markdown: str
     chunks: list[dict]
+    backend: str = "unknown"  # Extraction backend used
 
     def full_text(self) -> str:
         """Get full document text (prefer markdown, fallback to chunks)."""
@@ -42,6 +136,7 @@ def _init_db():
                 url TEXT,
                 title TEXT,
                 markdown TEXT,
+                backend TEXT,  -- Extraction backend used (docling_gpu, markitdown, vision, etc.)
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS chunks (
@@ -53,6 +148,13 @@ def _init_db():
                 PRIMARY KEY (url_hash, idx)
             );
         """)
+        
+        # Migration: Add backend column if it doesn't exist (for existing databases)
+        cursor = conn.execute("PRAGMA table_info(docs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "backend" not in columns:
+            conn.execute("ALTER TABLE docs ADD COLUMN backend TEXT")
+            print("[DB Migration] Added 'backend' column to docs table")
 
 
 def get(url: str) -> Doc | None:
@@ -62,7 +164,7 @@ def get(url: str) -> Doc | None:
     
     with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
         row = conn.execute(
-            "SELECT url, title, markdown FROM docs WHERE url_hash=?", (h,)
+            "SELECT url, title, markdown, backend FROM docs WHERE url_hash=?", (h,)
         ).fetchone()
         if not row:
             return None
@@ -75,11 +177,12 @@ def get(url: str) -> Doc | None:
             url=row[0],
             title=row[1],
             markdown=row[2],
-            chunks=[{"heading": c[0], "text": c[1], "tokens": c[2]} for c in chunks]
+            chunks=[{"heading": c[0], "text": c[1], "tokens": c[2]} for c in chunks],
+            backend=row[3] or "unknown"
         )
 
 
-def save(url: str, title: str, markdown: str):
+def save(url: str, title: str, markdown: str, backend: str = "unknown"):
     """Save document with chunked content."""
     _init_db()
     h = _url_hash(url)
@@ -87,8 +190,8 @@ def save(url: str, title: str, markdown: str):
     
     with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO docs (url_hash, url, title, markdown) VALUES (?, ?, ?, ?)",
-            (h, url, title, markdown)
+            "INSERT OR REPLACE INTO docs (url_hash, url, title, markdown, backend) VALUES (?, ?, ?, ?, ?)",
+            (h, url, title, markdown, backend)
         )
         conn.execute("DELETE FROM chunks WHERE url_hash=?", (h,))
         for i, chunk in enumerate(chunks):
@@ -170,25 +273,65 @@ def format_chunk(doc: Doc, section: int) -> str:
 
 
 async def fetch_and_cache(url: str) -> Doc | None:
-    """Fetch document via Docling and cache it."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    """
+    Fetch document with deployment-flexible extraction.
     
+    Automatically selects best available method:
+    - Docling GPU (best quality, requires GPU)
+    - MarkItDown (works everywhere, CPU-only)
+    
+    MarkItDown is used for:
+    - Audio, YouTube, EPUB, ZIP (Docling doesn't support)
+    - Fallback when Docling unavailable (cloud deployment without GPU)
+    """
+    # Check if MarkItDown should handle this URL (special formats)
+    if MARKITDOWN_AVAILABLE and should_use_markitdown(url):
+        return await _fetch_with_markitdown(url)
+    
+    # Check if Docling is available
+    docling_available = await _check_docling_available()
+    
+    # Try Docling first (if available)
+    if docling_available:
+        doc = await _fetch_with_docling(url)
+        if doc:
+            return doc
+    
+    # Fallback to MarkItDown (works without GPU)
+    if MARKITDOWN_AVAILABLE:
+        print(f"[Doc] Docling unavailable or failed, using MarkItDown fallback...")
+        doc = await _fetch_with_markitdown(url)
+        if doc:
+            return doc
+    
+    return None
+
+
+async def _check_docling_available() -> bool:
+    """Check if Docling GPU service is available."""
+    try:
+        docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{docling_url}/health")
+            return resp.status_code == 200
+    except:
+        return False
+
+
+async def _fetch_with_docling(url: str) -> Doc | None:
+    """Fetch document using Docling service."""
+    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+
+    # Build options based on pipeline mode (vlm or standard)
+    options = _build_docling_options()
+
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_DOCLING) as client:
             resp = await client.post(
                 f"{docling_url}/v1/convert/source",
                 json={
                     "sources": [{"kind": "http", "url": url}],
-                    "options": {
-                        "to_formats": ["md"],
-                        "image_export_mode": "placeholder",
-                        "do_picture_description": True,
-                        "picture_description_api": {
-                            "url": f"{config.LMSTUDIO_URL}/chat/completions",
-                            "params": {"model": "local", "max_completion_tokens": 500},
-                            "timeout": config.TIMEOUT_LLM
-                        }
-                    }
+                    "options": options
                 }
             )
             resp.raise_for_status()
@@ -205,10 +348,40 @@ async def fetch_and_cache(url: str) -> Doc | None:
                 return None
             
             title = _extract_title(markdown) or "Untitled"
-            save(url, title, markdown)
+            backend = "docling_gpu" if config.USE_DOCLING_GPU else "docling_cpu"
+            save(url, title, markdown, backend)
             return get(url)
     except Exception as e:
-        print(f"Docling error: {e}")
+        print(f"[Docling Error] {e}")
+        return None
+
+
+async def _fetch_with_markitdown(url: str) -> Doc | None:
+    """Fetch document using MarkItDown as fallback."""
+    if not MARKITDOWN_AVAILABLE:
+        return None
+    
+    try:
+        # MarkItDown sync call (run in thread if needed)
+        import asyncio
+        result = await asyncio.to_thread(
+            md_convert_file, url, use_vision=True
+        )
+        
+        if not result['success']:
+            print(f"[MarkItDown Error] {result.get('error', 'Unknown')}")
+            return None
+        
+        markdown = result['text_content']
+        title = result['title'] or "Untitled"
+        
+        if not markdown:
+            return None
+        
+        save(url, title, markdown, "markitdown")
+        return get(url)
+    except Exception as e:
+        print(f"[MarkItDown Error] {e}")
         return None
 
 

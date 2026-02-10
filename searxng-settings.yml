@@ -1,0 +1,30 @@
+# SearXNG Settings for MCP Gateway
+# Mount this file to /etc/searxng/settings.yml in the SearXNG container
+
+use_default_settings: true
+
+server:
+  # Allow requests from any host (needed for Docker)
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Secret key (change this in production)
+  secret_key: "mcp-gateway-secret-key-change-me"
+
+search:
+  # Safe search: 0 = off, 1 = moderate, 2 = strict
+  safe_search: 0
+  # Autocomplete: duckduckgo, google, startpage, swisscows, wikipedia
+  autocomplete: "duckduckgo"
+
+# Enable JSON format (required for MCP Gateway)
+search:
+  formats:
+    - html
+    - json
+
+# Outgoing requests
+outgoing:
+  # Request timeout
+  request_timeout: 10.0
+  # Maximum retries
+  max_request_timeout: 15.0

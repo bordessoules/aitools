@@ -2,33 +2,60 @@
 
 A minimal, composable MCP (Model Context Protocol) gateway for LLM tool use. Search the web and fetch content from any URL.
 
+**Features**: Vision-based web extraction, MarkItDown fallback for Docker deployments, knowledge base with OpenSearch, and flexible deployment profiles.
+
 ## Quick Start
 
-```powershell
-# Start dependencies (SearXNG + Docling)
-cd ..\searxng-mcp
-docker-compose --profile gpu up -d
+### 🚀 Deploy with One Command
 
-# Start the gateway
-python -m src.gateway -t sse -p 8000
+```bash
+# Clone and setup
+cd mcp-gateway
+cp .env.example .env
+
+# Deploy with auto-detection (recommended)
+./deploy.sh          # Linux/Mac
+.\deploy.ps1         # Windows
 ```
+
+The deploy script will detect your hardware and recommend the best configuration.
+
+## Deployment Profiles
+
+| Profile | Services | RAM | GPU | LLM | Best For |
+|---------|----------|-----|-----|-----|----------|
+| **minimal** | Gateway + Search | 4GB | No | No | Text-only extraction, works anywhere |
+| **standard** | +Knowledge Base | 8GB | No | Optional | Persistent KB, no heavy PDF processing |
+| **cpu** | +Docling CPU | 16GB | No | Optional | Full features, CPU-only |
+| **gpu** | +Docling GPU | 8GB+ | Yes | Optional | Best PDF processing with GPU |
+
+```bash
+# Deploy specific profile
+./deploy.sh -p standard
+./deploy.sh -p gpu
+
+# Or manually with docker compose
+docker compose --profile standard up -d
+```
+
+📖 **[DEPLOYMENT.md](DEPLOYMENT.md)** - Detailed setup, configuration, and troubleshooting.
 
 ## Tools
 
 ### Web & Content Tools
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
-| `search` | Web search | Finding information, discovering URLs |
-| `fetch` | Retrieve content | Getting content from any URL |
-| `fetch_section` | Get document section | When fetch returns a table of contents |
+| `search(query)` | Web search | Finding information, discovering URLs |
+| `fetch(url)` | Retrieve content | Getting content from any URL (one-time use) |
+| `fetch_section(url, section)` | Get document section | When fetch returns a table of contents |
 
 ### Knowledge Base Tools (Requires OpenSearch)
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
-| `fetch(url, add_to_kb=True)` | Add to knowledge base | When you want to save a document for later search |
-| `kb_search` | Search knowledge base | Finding information in previously saved documents |
-| `kb_list` | List saved documents | See what's in your knowledge base |
-| `kb_remove` | Remove document | Clean up the knowledge base |
+| `kb_search(query)` | Search knowledge base | **Always try this FIRST** before web search |
+| `add_to_knowledge_base(url)` | Save document | After fetch(), if content is valuable |
+| `kb_list()` | List saved documents | See what's in your knowledge base |
+| `kb_remove(url)` | Remove document | Clean up the knowledge base |
 
 ## Usage Examples
 
@@ -41,6 +68,22 @@ LLM: search("stable-diffusion.cpp build instructions")
 
 LLM: fetch("https://github.com/leejet/stable-diffusion.cpp")
 → Gets: README content or table of contents
+```
+
+### Building a Knowledge Base
+```
+User: "I want to research LLMs. Please add these papers to my knowledge base."
+
+LLM: fetch("https://arxiv.org/abs/1706.03762")
+→ Reads and evaluates the paper
+
+LLM: add_to_knowledge_base("https://arxiv.org/abs/1706.03762")
+→ Saves to knowledge base for future search
+
+User: "What do these papers say about training efficiency?"
+
+LLM: kb_search("training efficiency techniques")
+→ Searches saved papers and returns relevant snippets
 ```
 
 ### Large Document Handling
@@ -57,59 +100,78 @@ LLM: fetch_section("https://example.com/encyclopedia.pdf", section=15)
 → Gets section 15 content about quantum physics
 ```
 
-### Building a Knowledge Base
-```
-User: "I want to research LLMs. Please add these papers to my knowledge base:
-       - Attention is All You Need
-       - The Llama 3 Herd"
-
-LLM: fetch("https://arxiv.org/abs/1706.03762", add_to_kb=True)
-→ Fetches and adds to knowledge base
-
-LLM: fetch("https://arxiv.org/abs/2407.21783", add_to_kb=True)
-→ Fetches and adds to knowledge base
-
-User: "What do these papers say about training efficiency?"
-
-LLM: kb_search("training efficiency techniques")
-→ Searches both papers and returns relevant snippets
-```
-
-### Direct URL Fetch
-```
-User: "Summarize this article"
-
-LLM: fetch("https://arxiv.org/abs/1706.03762")
-→ Gets paper abstract (auto-converted from arxiv abs to PDF)
-```
-
 ## Tool Reference
 
 ### `search(query: str) -> str`
-Search the web via SearXNG.
+Search the web via SearXNG for current information.
 
-Returns search results with titles, URLs, and snippets.
+**Best practice**: Always try `kb_search()` first! It's faster and may already have answers.
 
 ### `fetch(url: str) -> str`
-Fetch content from any URL.
+Fetch content from any URL for immediate reading. Content is **NOT** saved.
 
 **Content type handling:**
-| URL Type | Handling |
-|----------|----------|
-| GitHub repos | README.md (main/master) |
-| arXiv abstracts | Auto-converted to PDF |
-| PDFs, DOCXs | Parsed via Docling |
-| Images | Described via Vision AI |
-| Web pages | HTTP extraction (browser optional) |
+| URL Type | Method | Notes |
+|----------|--------|-------|
+| GitHub repos | MarkItDown | Raw README extraction |
+| arXiv abstracts | MarkItDown | Auto-converted to PDF |
+| PDFs, DOCXs | Docling GPU/CPU → MarkItDown | Best table/formula extraction |
+| Images | Vision AI (Qwen3-VL) | Image descriptions |
+| YouTube, Audio | MarkItDown | Transcription |
+| Web pages | MarkItDown → Playwright | Fast, clean markdown |
 
 **Size handling:**
 - Small documents (< ~4000 tokens): Returns full content
 - Large documents: Returns table of contents; use `fetch_section()`
 
-### `fetch_section(url: str, section: int) -> str`
-Fetch a specific section from a large document.
+### `add_to_knowledge_base(url: str) -> str`
+Save a document to your knowledge base for future recall.
 
-Use ONLY after `fetch()` returns a table of contents.
+**When to save:**
+- Official documentation and manuals
+- Technical specifications
+- Authoritative tutorials or guides
+- Research papers or articles
+
+**Do NOT save:**
+- Search result pages or forum discussions
+- Content you're just exploring
+- Outdated or temporary information
+
+### `kb_search(query: str) -> str`
+Search your knowledge base for previously saved documents.
+
+**FAST and FREE** - always call this before web search!
+
+## Local Development
+
+For development without Docker:
+
+```bash
+# 1. Setup
+python setup.py              # Installs uv, creates venv
+
+# 2. Configure
+cp .env.example .env         # Edit with your settings
+
+# 3. Start required services
+docker compose --profile minimal up -d searxng
+
+# 4. Start gateway locally
+.\start.ps1 -Transport sse   # SSE for web clients (default)
+.\start.ps1 -Transport stdio # stdio for Kimi CLI, Cursor
+```
+
+### Multi-Transport Support
+
+The gateway supports two transport modes:
+
+| Transport | Use Case | Multi-Client |
+|-----------|----------|--------------|
+| **SSE** | Web clients, APIs, multiple users | ✅ Yes |
+| **stdio** | Kimi CLI, Cursor, Claude Desktop | ❌ Single client |
+
+See [DEPLOYMENT_RECIPES.md](DEPLOYMENT_RECIPES.md) for complete deployment matrix.
 
 ## Configuration
 
@@ -117,73 +179,47 @@ Copy `.env.example` to `.env` and configure:
 
 ```bash
 # Required
-SEARXNG_URL=http://localhost:8080
-LMSTUDIO_URL=http://localhost:1234/v1
+LMSTUDIO_URL=http://host.docker.internal:1234/v1
 
-# Optional (for GPU document parsing)
-DOCLING_GPU_URL=http://localhost:8002
+# Optional: GPU document processing
 USE_DOCLING_GPU=true
 
-# Optional (for browser extraction)
+# Optional: Playwright web extraction (Chrome extension)
 PLAYWRIGHT_MCP_TOKEN=your_token_here
 ```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full configuration options.
 
 ## Architecture
 
 ```
 src/
-├── gateway.py    # MCP tool definitions
-├── routing.py    # URL classification, search
-├── fetch.py      # Content fetching (browser, HTTP, vision)
-├── documents.py  # Docling integration, caching, chunking
-└── config.py     # Configuration
-
-~400 lines total
+├── gateway.py             # MCP tool definitions
+├── routing.py             # URL classification, search
+├── fetch.py               # Web extraction (MarkItDown → Playwright → HTTP)
+├── documents.py           # Docling integration, caching, chunking
+├── markitdown_client.py   # MarkItDown client + Vision AI
+├── knowledge_base.py      # OpenSearch integration
+└── config.py              # Configuration
 ```
 
-## Docker Services
+**Document Pipeline:**
+- **Docling GPU**: Complex PDFs, academic papers, tables (best quality)
+- **MarkItDown**: Audio, YouTube, EPUBs, simple PDFs (works everywhere)
 
-The gateway requires these services (run via docker-compose):
+**Web Pipeline:**
+- **Vision** (~3-5s): Chrome + Qwen3-VL for best quality (local dev)
+- **Docker Playwright** (~2-3s): Full browser in Docker with auth support
+- **MarkItDown** (~0.4s): Fast, works everywhere (fallback)
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| `searxng` | 8080 | Web search engine |
-| `docling-gpu` | 8002 | PDF/document parsing (GPU) |
+## Documentation
 
-## Requirements
-
-**Required:**
-- Python 3.11+
-- Docker & Docker Compose (for SearXNG search)
-
-**Optional:**
-- LM Studio or OpenAI-compatible API (for image descriptions via Vision AI)
-- Docling GPU service (for PDF parsing)
-- Playwright MCP Chrome extension (for JavaScript-rendered pages - HTTP fallback works without this)
-
-## Installation
-
-```bash
-# Clone and setup
-git clone <repo>
-cd aitools
-
-# Install dependencies (Python + Node.js)
-python setup.py
-
-# Configure
-cp .env.example .env
-# Edit .env with your settings
-
-# Start required services (SearXNG for search)
-docker-compose --profile gpu up -d  # in searxng-mcp directory
-
-# Optional: Start OpenSearch for knowledge base
-docker compose -f docker-compose.opensearch.yml up -d
-
-# Start gateway
-python -m src.gateway -t sse -p 8000
-```
+- **[QUICKSTART.md](QUICKSTART.md)** - **Quick start guide**
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Three-tier deployment recipes (Full/CPU/Minimal)
+- **[DEPLOYMENT_RECIPES.md](DEPLOYMENT_RECIPES.md)** - Complete deployment matrix
+- **[WEB_EXTRACTION.md](WEB_EXTRACTION.md)** - Web extraction methods
+- **[KIMI_CLI_SETUP.md](KIMI_CLI_SETUP.md)** - Kimi CLI stdio configuration
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues and solutions
 
 ## License
 

@@ -1,0 +1,46 @@
+# MCP Gateway with Docker Playwright
+# Includes Chromium browser for web extraction in containers
+
+FROM mcr.microsoft.com/playwright/python:v1.50.0-noble
+
+# Install additional dependencies
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/ ./src/
+
+# Create auth directory for pre-authenticated sessions
+RUN mkdir -p /app/auth
+
+# Environment variables
+ENV PYTHONPATH=/app
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Default to headless mode (set to true for headed with Xvfb)
+ENV PLAYWRIGHT_DOCKER_HEADED=false
+
+# Expose gateway port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Start with Xvfb if headed mode enabled
+CMD if [ "$PLAYWRIGHT_DOCKER_HEADED" = "true" ]; then \
+        echo "Starting with Xvfb (headed mode)..."; \
+        Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR -noreset & \
+        sleep 2; \
+        DISPLAY=:99 python -m src.gateway -t sse -p 8000; \
+    else \
+        echo "Starting in headless mode..."; \
+        python -m src.gateway -t sse -p 8000; \
+    fi

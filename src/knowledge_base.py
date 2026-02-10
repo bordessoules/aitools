@@ -4,16 +4,13 @@ Knowledge Base with OpenSearch backend.
 Provides semantic search over documents fetched via Docling.
 """
 
-import os
 import hashlib
 from datetime import datetime
-from typing import Optional
+
 import httpx
 
 import config
 
-# OpenSearch configuration
-OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
 INDEX_NAME = "mcp_knowledge_base"
 
 
@@ -26,7 +23,7 @@ async def is_available() -> bool:
     """Check if OpenSearch is available."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{OPENSEARCH_URL}/_cluster/health")
+            resp = await client.get(f"{config.OPENSEARCH_URL}/_cluster/health")
             return resp.status_code == 200
     except:
         return False
@@ -37,7 +34,7 @@ async def init_index() -> bool:
     try:
         async with httpx.AsyncClient() as client:
             # Check if index exists
-            resp = await client.head(f"{OPENSEARCH_URL}/{INDEX_NAME}")
+            resp = await client.head(f"{config.OPENSEARCH_URL}/{INDEX_NAME}")
             if resp.status_code == 200:
                 return True
             
@@ -76,7 +73,7 @@ async def init_index() -> bool:
             }
             
             resp = await client.put(
-                f"{OPENSEARCH_URL}/{INDEX_NAME}",
+                f"{config.OPENSEARCH_URL}/{INDEX_NAME}",
                 json=index_config
             )
             return resp.status_code in (200, 201)
@@ -100,7 +97,7 @@ async def add_document(url: str, title: str, content: str, chunks: list, source_
         Success message or error
     """
     if not await is_available():
-        return "Error: OpenSearch not available. Start it with: docker compose -f docker-compose.opensearch.yml up -d"
+        return "Error: OpenSearch not available. Start it with: docker compose --profile standard up -d opensearch"
     
     await init_index()
     
@@ -118,7 +115,7 @@ async def add_document(url: str, title: str, content: str, chunks: list, source_
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.put(
-                f"{OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}",
+                f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}",
                 json=doc
             )
             if resp.status_code in (200, 201):
@@ -140,7 +137,7 @@ async def search(query: str, max_results: int = 5) -> str:
         Search results
     """
     if not await is_available():
-        return "Error: OpenSearch not available. Start it with: docker compose -f docker-compose.opensearch.yml up -d"
+        return "Error: OpenSearch not available. Start it with: docker compose --profile standard up -d opensearch"
     
     await init_index()
     
@@ -165,7 +162,7 @@ async def search(query: str, max_results: int = 5) -> str:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{OPENSEARCH_URL}/{INDEX_NAME}/_search",
+                f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json=search_body
             )
             resp.raise_for_status()
@@ -211,7 +208,7 @@ async def list_documents(max_results: int = 20) -> str:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{OPENSEARCH_URL}/{INDEX_NAME}/_search",
+                f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json={
                     "size": max_results,
                     "sort": [{"added_at": {"order": "desc"}}],
@@ -254,7 +251,7 @@ async def remove_document(url: str) -> str:
     
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.delete(f"{OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}")
+            resp = await client.delete(f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}")
             if resp.status_code == 200:
                 return f"Removed from knowledge base: {url[:60]}..."
             elif resp.status_code == 404:

@@ -3,11 +3,18 @@ MCP Gateway - Minimal tool interface for web search and content retrieval.
 
 Exposed tools:
 - search(query): Search the web
-- fetch(url, add_to_kb): Fetch content from any URL
+- fetch(url): Fetch content from any URL (one-time use)
 - fetch_section(url, section): Fetch a specific section from a large document
+- add_to_knowledge_base(url): Add a document to the knowledge base
 - kb_search(query): Search the knowledge base
 - kb_list(): List documents in knowledge base
 - kb_remove(url): Remove document from knowledge base
+
+WORKFLOW:
+1. kb_search(query) - Check knowledge base first (FAST)
+2. search(query) - Find new sources if needed
+3. fetch(url) - Read and evaluate content
+4. add_to_knowledge_base(url) - Save valuable content for later
 """
 
 import sys
@@ -29,7 +36,16 @@ mcp = FastMCP("mcp-gateway", host="0.0.0.0")
 @mcp.tool()
 async def search(query: str) -> str:
     """
-    Search the web via SearXNG and return results.
+    Search the web via SearXNG for current information.
+    
+    BEST PRACTICE: Before calling this, try kb_search() first!
+    Your knowledge base is faster and may already contain relevant answers.
+    
+    Use web search when:
+    - kb_search() returned no relevant results
+    - You need the latest or real-time information
+    - The user asks about current events or recent developments
+    - The topic is likely not in your knowledge base
     
     Args:
         query: Search query
@@ -41,13 +57,16 @@ async def search(query: str) -> str:
 
 
 @mcp.tool()
-async def fetch(url: str, add_to_kb: bool = False) -> str:
+async def fetch(url: str) -> str:
     """
-    Fetch content from any URL.
+    Fetch content from any URL for immediate reading.
+    
+    This is for ONE-TIME USE only. Content is not saved for later reference.
+    Use this to read and evaluate whether content is worth saving.
     
     Handles content types automatically:
-    - Web pages: Retrieved via browser (with HTTP fallback)
-    - PDFs/DOCs: Parsed and extracted as text
+    - Web pages: Vision → Docker Playwright → MarkItDown
+    - PDFs/DOCs: Docling → MarkItDown fallback
     - Images: Described via vision AI
     - GitHub repos: README extracted
     
@@ -57,13 +76,12 @@ async def fetch(url: str, add_to_kb: bool = False) -> str:
       When you see "This is the table of contents", use fetch_section(url, section=N) 
       to retrieve the specific section you need.
     
-    KNOWLEDGE BASE:
-    - Set add_to_kb=True to also add this document to the searchable knowledge base
-    - Use kb_search() to search previously added documents
+    WORKFLOW:
+    1. fetch(url) - Read and evaluate the content
+    2. If valuable: call add_to_knowledge_base(url) to save it
     
     Args:
         url: Any URL to fetch content from
-        add_to_kb: If True, also adds the document to the knowledge base for later search
     
     Returns:
         Document content, or table of contents if document is large
@@ -74,8 +92,6 @@ async def fetch(url: str, add_to_kb: bool = False) -> str:
     # Images: describe via vision
     if handler == "image":
         content = await fetch_module.describe_image(url)
-        if add_to_kb:
-            await kb.add_document(url, "Image", content, [], "image")
         return content
     
     # Documents (PDFs, DOCs): parse with Docling
@@ -88,10 +104,6 @@ async def fetch(url: str, add_to_kb: bool = False) -> str:
         
         content = doc.full_text()
         
-        # Add to knowledge base if requested
-        if add_to_kb:
-            await kb.add_document(url, doc.title or "Untitled", content, doc.chunks, "document")
-        
         # Check size - return full or TOC
         estimated_tokens = len(content) // config.CHARS_PER_TOKEN
         
@@ -102,19 +114,6 @@ async def fetch(url: str, add_to_kb: bool = False) -> str:
     
     # Webpages: fetch via browser
     content = await fetch_module.get_webpage(url)
-    
-    # Add to knowledge base if requested
-    if add_to_kb and not content.startswith("Error:"):
-        # Extract title from first line if possible
-        title = "Web Page"
-        lines = content.split('\n')
-        for line in lines[:5]:
-            if line.strip() and not line.startswith('Source:'):
-                title = line.strip()[:100]
-                break
-        
-        await kb.add_document(url, title, content, [], "webpage")
-    
     return content
 
 
@@ -151,12 +150,97 @@ async def fetch_section(url: str, section: int) -> str:
 
 
 @mcp.tool()
+async def add_to_knowledge_base(url: str) -> str:
+    """
+    Add a URL to your knowledge base for future recall.
+    
+    Use this AFTER reading with fetch() when the content is valuable and
+    reference-worthy. Think of it as bookmarking important sources.
+    
+    WHEN TO SAVE:
+    - Official documentation and manuals
+    - Technical specifications and datasheets
+    - Authoritative tutorials or guides
+    - Important research papers or articles
+    - Code repositories with useful examples
+    - Content the user explicitly says to save
+    
+    DO NOT SAVE:
+    - Search result pages or forum discussions
+    - Content you're just exploring (might be irrelevant)
+    - Outdated or low-quality sources
+    - Temporary or time-sensitive information
+    
+    If the URL was recently fetched, uses cached content.
+    Otherwise, fetches then saves.
+    
+    Args:
+        url: URL to add to the knowledge base
+    
+    Returns:
+        Confirmation message with document title
+    """
+    url = routing.normalize_url(url)
+    handler = routing.classify(url)
+    
+    # Images
+    if handler == "image":
+        doc = documents.get(url)
+        if doc:
+            content = doc.full_text()
+        else:
+            content = await fetch_module.describe_image(url)
+        return await kb.add_document(url, "Image", content, [], "image")
+    
+    # Documents
+    if handler == "document":
+        doc = documents.get(url)
+        if doc is None:
+            doc = await documents.fetch_and_cache(url)
+        if doc is None:
+            return f"Error: Could not fetch document from {url}"
+        
+        content = doc.full_text()
+        return await kb.add_document(url, doc.title or "Untitled", content, doc.chunks, "document")
+    
+    # Webpages
+    doc = documents.get(url)
+    if doc:
+        # Use cached content
+        content = doc.full_text()
+        title = doc.title or "Web Page"
+    else:
+        # Fetch then save
+        content = await fetch_module.get_webpage(url)
+        if content.startswith("Error:"):
+            return f"Error: Could not fetch webpage from {url}"
+        
+        # Extract title from first line if possible
+        title = "Web Page"
+        lines = content.split('\n')
+        for line in lines[:5]:
+            if line.strip() and not line.startswith('Source:'):
+                title = line.strip()[:100]
+                break
+    
+    return await kb.add_document(url, title, content, [], "webpage")
+
+
+@mcp.tool()
 async def kb_search(query: str) -> str:
     """
-    Search the knowledge base for previously added documents.
+    Search your knowledge base for previously saved documents.
     
-    This searches through all documents that were added with fetch(url, add_to_kb=True).
-    Uses semantic search to find relevant content.
+    FAST and FREE - always call this FIRST before web search!
+    This searches through all documents added with add_to_knowledge_base().
+    
+    Use this when:
+    - Starting any research task (check what you already know)
+    - The user refers to previous discussions or documents
+    - You need information that was saved earlier
+    
+    Only use web search (search()) if kb_search returns no relevant results,
+    or if you need the latest/current information.
     
     Args:
         query: Search query
@@ -184,7 +268,7 @@ async def kb_remove(url: str) -> str:
     Remove a document from the knowledge base.
     
     Args:
-        url: URL of the document to remove (must match the URL used in fetch)
+        url: URL of the document to remove (must match the URL used in add_to_knowledge_base)
     
     Returns:
         Confirmation of removal or error message
