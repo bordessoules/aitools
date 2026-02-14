@@ -61,7 +61,8 @@ VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl-4b")  # Model name for vision
 # DOCLING DOCUMENT PARSING
 # =============================================================================
 # Docling handles PDFs, Office docs with high-quality extraction.
-# Granite-258M ALWAYS runs inside the container (fast, no external API needed).
+# "vlm" pipeline sends page images to VISION_API_URL for conversion (best quality).
+# "standard" pipeline uses EasyOCR + Tableformer locally (faster, no VLM needed).
 # Picture descriptions optionally use VISION_API_URL if enabled.
 
 # Docling service URLs
@@ -70,13 +71,15 @@ DOCLING_GPU_URL = os.getenv("DOCLING_GPU_URL", "http://localhost:5001")
 USE_DOCLING_GPU = os.getenv("USE_DOCLING_GPU", "false").lower() == "true"
 
 # Pipeline mode:
-#   "vlm"      - Granite-258M handles OCR, tables, layout (best quality, runs in container)
+#   "vlm"      - Sends pages to VISION_API_URL for conversion (best quality)
+#                Falls back to local Granite-258M if no VISION_API_URL
 #   "standard" - EasyOCR + Tableformer (lighter, faster, no VLM needed)
-DOCLING_PIPELINE = os.getenv("DOCLING_PIPELINE", "vlm")
+DOCLING_PIPELINE = os.getenv("DOCLING_PIPELINE", "standard")
 
-# VLM pipeline settings (Granite-258M runs locally in container)
+# VLM pipeline settings
 DOCLING_VLM_REPO_ID = os.getenv("DOCLING_VLM_REPO_ID", "ibm-granite/granite-docling-258M")
 DOCLING_VLM_MAX_TOKENS = _env_int("DOCLING_VLM_MAX_TOKENS") or 4096
+DOCLING_VLM_CONCURRENCY = _env_int("DOCLING_VLM_CONCURRENCY") or 1
 
 # Picture descriptions (optional, uses VISION_API_URL if enabled)
 # When enabled, images/charts in documents are described using the vision model
@@ -116,10 +119,15 @@ CHARS_PER_TOKEN = 4
 # Read from .env - no defaults here to ensure explicit configuration.
 # These override whatever defaults the LLM wrapper (LM Studio, llama.cpp) uses.
 
-# Vision Model (Qwen3-VL) - for image description, web extraction
+# Vision Model sampling - used for VLM pipeline and picture descriptions.
+# Set these to match your model's recommended sampling.
+# Tested presets:
+#   Qwen3-VL (2B/4B/8B): temp=0.7, top_p=0.8, top_k=20, presence_penalty=1.5, repetition_penalty=1.0
+#   LFM2.5-VL-1.6B:      temp=0.1, min_p=0.15, repetition_penalty=1.05
 VLM_TEMPERATURE = _env_float("VLM_TEMPERATURE")
 VLM_TOP_P = _env_float("VLM_TOP_P")
 VLM_TOP_K = _env_int("VLM_TOP_K")
+VLM_MIN_P = _env_float("VLM_MIN_P")
 VLM_MAX_TOKENS = _env_int("VLM_MAX_TOKENS")
 VLM_PRESENCE_PENALTY = _env_float("VLM_PRESENCE_PENALTY")
 VLM_REPETITION_PENALTY = _env_float("VLM_REPETITION_PENALTY")

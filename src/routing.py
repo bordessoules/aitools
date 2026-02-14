@@ -26,11 +26,7 @@ def normalize_url(url: str) -> str:
     # Try GitHub transforms (README files and blob URLs)
     for pattern, replacement in GITHUB_PATTERNS:
         if re.search(pattern, url):
-            # Try main branch first, then master
             transformed = re.sub(pattern, replacement, url)
-            if 'main/' in transformed or 'master/' in transformed:
-                return transformed
-            # For blob URLs, replacement already includes branch
             return transformed
     
     return url

@@ -387,11 +387,11 @@ deploy() {
     fi
     
     if [[ "$profile" == "cpu" ]]; then
-        ports[8001]="Docling CPU"
+        ports[5001]="Docling CPU"
     fi
-    
+
     if [[ "$profile" == "gpu" ]]; then
-        ports[8002]="Docling GPU"
+        ports[5001]="Docling GPU"
     fi
     
     for port in "${!ports[@]}"; do

@@ -1,12 +1,12 @@
 """
 Content fetching with deployment-flexible extraction.
 
-Supports 3 deployment tiers:
-1. Full: Chrome + Qwen vision (best quality, local dev)
-2. Docker: Docker Playwright with auth support (cloud-friendly)
-3. Minimal: MarkItDown only (fastest, works anywhere)
+Web extraction tiers (auto mode):
+1. Vision: Chrome extension + VLM (best quality, local dev only)
+2. Docker Playwright: Headless Chromium with ad blocking, cookie handling (Docker default)
 
-Automatically detects available services and degrades gracefully.
+MarkItDown is used only for HTML-to-markdown conversion of Playwright output,
+NOT as a direct web fetcher (it doesn't render JS and produces garbage on modern sites).
 """
 
 import asyncio
@@ -226,7 +226,7 @@ async def get_webpage(url: str, section: int = None, force_method: str = None) -
             errors.append("MarkItDown: Not available")
     
     else:  # auto - try all methods in order
-        # Tier 1: Vision extraction (best quality - local Chrome)
+        # Tier 1: Vision extraction (best quality - local Chrome + VLM)
         if has_vision:
             try:
                 print(f"[Web] Trying vision extraction for: {url[:60]}...")
@@ -238,8 +238,8 @@ async def get_webpage(url: str, section: int = None, force_method: str = None) -
             except Exception as e:
                 errors.append(f"Vision: {e}")
                 print(f"[Web] FAIL: Vision failed, trying next...")
-        
-        # Tier 2: Docker Playwright (Docker with auth support)
+
+        # Tier 2: Docker Playwright (headless Chromium, ad blocking, cookie handling)
         if not markdown and has_docker_playwright:
             try:
                 print(f"[Web] Trying Docker Playwright for: {url[:60]}...")
@@ -252,18 +252,6 @@ async def get_webpage(url: str, section: int = None, force_method: str = None) -
             except Exception as e:
                 errors.append(f"Docker Playwright: {e}")
                 print(f"[Web] FAIL: Docker Playwright failed, trying next...")
-        
-        # Tier 3: MarkItDown (final fallback - works everywhere)
-        if not markdown and has_markitdown:
-            try:
-                print(f"[Web] Trying MarkItDown for: {url[:60]}...")
-                result = await asyncio.to_thread(md_convert_file, url, use_vision=False)
-                if result.get('success') and len(result.get('text_content', '')) > 500:
-                    markdown = result['text_content']
-                    extraction_method = 'markitdown'
-                    print(f"[Web] OK: MarkItDown: {len(markdown)} chars")
-            except Exception as e:
-                errors.append(f"MarkItDown: {e}")
     
     if not markdown:
         error_msg = "; ".join(errors) if errors else "All methods failed"
@@ -320,7 +308,7 @@ async def _extract_with_vision(url: str) -> str | None:
                     try:
                         await session.call_tool("browser_scroll", {"direction": "down", "amount": 500})
                         await asyncio.sleep(1)
-                    except:
+                    except Exception:
                         pass  # Scroll may fail on some pages
                 
                 # Take screenshot
@@ -373,8 +361,10 @@ async def _extract_with_vision(url: str) -> str | None:
 async def describe_image(url: str, prompt: str = "Describe this image in detail.") -> str:
     """Describe image using Vision AI."""
     try:
-        async with httpx.AsyncClient(timeout=config.TIMEOUT_BROWSER) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_BROWSER, follow_redirects=True) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0"
+            })
             resp.raise_for_status()
             img_b64 = base64.b64encode(resp.content).decode()
 
@@ -480,17 +470,36 @@ async def _fetch_html_as_text(url: str) -> str | None:
 
 
 def _html_to_markdown(html: str, url: str) -> str:
-    """Convert HTML to markdown (fallback when MarkItDown not available)."""
+    """Convert rendered HTML from Playwright to clean markdown.
+
+    Uses MarkItDown if available (best quality), falls back to regex conversion.
+    """
+    # Try MarkItDown first — it handles HTML-to-markdown well
+    if MARKITDOWN_AVAILABLE:
+        try:
+            import tempfile, os
+            # Write HTML to temp file so MarkItDown can process it
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+                f.write(html)
+                tmp_path = f.name
+            try:
+                result = md_convert_file(tmp_path, use_vision=False)
+                if result.get('success') and len(result.get('text_content', '')) > 200:
+                    return f"Source: {url}\n\n{result['text_content']}"
+            finally:
+                os.unlink(tmp_path)
+        except Exception as e:
+            print(f"[Web] MarkItDown HTML conversion failed, using regex fallback: {e}")
+
+    # Regex fallback
     import html as html_module
 
-    # Simple HTML to text conversion
     text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<nav[^>]*>.*?</nav>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<header[^>]*>.*?</header>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<footer[^>]*>.*?</footer>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
-    # Convert common tags
+
     text = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n\n', text, flags=re.IGNORECASE)
@@ -504,17 +513,13 @@ def _html_to_markdown(html: str, url: str) -> str:
     text = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<li[^>]*>(.*?)</li>', r'- \1\n', text, flags=re.IGNORECASE)
-    
-    # Remove remaining tags
-    text = re.sub(r'<[^>]+>', '', text)
 
-    # Decode HTML entities
+    text = re.sub(r'<[^>]+>', '', text)
     text = html_module.unescape(text)
-    
-    # Clean up
+
     lines = [line.strip() for line in text.split('\n')]
     lines = [line for line in lines if line]
-    
+
     return f"Source: {url}\n\n" + '\n'.join(lines)
 
 

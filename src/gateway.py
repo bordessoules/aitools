@@ -282,8 +282,20 @@ def run_stdio():
 
 def run_sse(host: str = "0.0.0.0", port: int = 8000):
     import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route, Mount
+
+    async def health(request):
+        return JSONResponse({"status": "ok"})
+
+    app = Starlette(routes=[
+        Route("/health", health),
+        Mount("/", app=mcp.sse_app()),
+    ])
+
     print(f"Starting MCP Gateway on {host}:{port}")
-    uvicorn.run(mcp.sse_app(), host=host, port=port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

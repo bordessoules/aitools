@@ -19,7 +19,10 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN uv pip install --system -r requirements.txt && \
-    uv pip install --system "markitdown[all]" openai mcp httpx
+    uv pip install --system "markitdown[all]" openai mcp httpx playwright
+
+# Install Chromium for web extraction (Docker Playwright)
+RUN playwright install chromium --with-deps
 
 # Copy application code
 COPY src/ ./src/

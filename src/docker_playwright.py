@@ -129,10 +129,14 @@ async def setup_ad_blocking(context: BrowserContext):
     
     async def route_handler(route):
         url = route.request.url
-        hostname = route.request.url_parts.hostname
-        
+        try:
+            from urllib.parse import urlparse
+            hostname = urlparse(url).hostname or ""
+        except Exception:
+            hostname = ""
+
         # Block ad/tracking domains
-        if any(ad_domain in hostname for ad_domain in AD_DOMAINS):
+        if hostname and any(ad_domain in hostname for ad_domain in AD_DOMAINS):
             # print(f"[AdBlock] Blocked: {hostname}")
             await route.abort()
             return
@@ -216,9 +220,9 @@ async def extract_webpage(url: str, wait_for_js: bool = True) -> str:
                 try:
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                     await asyncio.sleep(1)
-                except:
+                except Exception:
                     pass
-            
+
             # Get content
             content = await page.content()
             
@@ -264,7 +268,7 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
             try:
                 await page.wait_for_url("**/myaccount.google.com/**", timeout=60000)
                 print("[Auth Setup] Login detected!")
-            except:
+            except Exception:
                 input("[Auth Setup] Press Enter when login is complete...")
             
             # Save state

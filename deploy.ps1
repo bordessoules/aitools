@@ -18,7 +18,7 @@ param(
 # ============================================================================
 
 $VERSION = "1.0.0"
-$REQUIRED_PORTS = @(8000, 8080, 9200, 5601, 8001, 8002)
+$REQUIRED_PORTS = @(8000, 8080, 9200, 5601, 5001)
 
 # Profile definitions with clear use cases
 $PROFILES = @{
@@ -356,8 +356,8 @@ function Invoke-Deployment($profile) {
         @{ Port = 8080; Service = "SearXNG" }
         @{ Port = 9200; Service = "OpenSearch"; Profiles = @("standard", "cpu", "gpu") }
         @{ Port = 5601; Service = "Dashboards"; Profiles = @("standard", "cpu", "gpu") }
-        @{ Port = 8001; Service = "Docling CPU"; Profiles = @("cpu") }
-        @{ Port = 8002; Service = "Docling GPU"; Profiles = @("gpu") }
+        @{ Port = 5001; Service = "Docling CPU"; Profiles = @("cpu") }
+        @{ Port = 5001; Service = "Docling GPU"; Profiles = @("gpu") }
     )
     
     foreach ($check in $portChecks) {

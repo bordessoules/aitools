@@ -42,7 +42,7 @@ services:
 
       # Docling configuration
       - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
-      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-vlm}
+      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
       # Other settings
@@ -118,18 +118,22 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
       interval: 30s
       timeout: 10s
+      start_period: 45s
       retries: 3
 
   # ============================================================================
   # DOCLING CPU - Document processing without GPU (optional, included in: cpu)
   # ============================================================================
   docling-cpu:
-    image: quay.io/docling-project/docling-serve-cpu:latest
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.12.0
     container_name: mcp-docling-cpu
     profiles:
       - cpu
     environment:
       - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+    volumes:
+      # Persist HF model downloads (including Granite-258M for VLM pipeline)
+      - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
     ports:
       - "${DOCLING_CPU_PORT:-5001}:5001"
     extra_hosts:
@@ -141,6 +145,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
       timeout: 10s
+      start_period: 60s
       retries: 3
 
   # ============================================================================
@@ -148,12 +153,15 @@ services:
   # Requires NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
   # ============================================================================
   docling-gpu:
-    image: quay.io/docling-project/docling-serve-cu128:latest
+    image: ghcr.io/docling-project/docling-serve-cu128:v1.12.0
     container_name: mcp-docling-gpu
     profiles:
       - gpu
     environment:
       - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+    volumes:
+      # Persist HF model downloads (including Granite-258M for VLM pipeline)
+      - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
     ports:
       - "${DOCLING_GPU_PORT:-5001}:5001"
     extra_hosts:
@@ -172,6 +180,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
       timeout: 10s
+      start_period: 60s
       retries: 3
 
   # ============================================================================
@@ -190,7 +199,8 @@ services:
     ports:
       - "${DASHBOARDS_PORT:-5601}:5601"
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
     networks:
       - mcp-network
     restart: unless-stopped
@@ -202,3 +212,4 @@ networks:
 volumes:
   searxng-data:
   opensearch-data:
+  docling-hf-cache:

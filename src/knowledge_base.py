@@ -25,7 +25,7 @@ async def is_available() -> bool:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{config.OPENSEARCH_URL}/_cluster/health")
             return resp.status_code == 200
-    except:
+    except Exception:
         return False
 
 

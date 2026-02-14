@@ -35,6 +35,8 @@ def _build_vision_params() -> dict:
         params["top_p"] = config.VLM_TOP_P
     if config.VLM_TOP_K is not None:
         params["top_k"] = config.VLM_TOP_K
+    if config.VLM_MIN_P is not None:
+        params["min_p"] = config.VLM_MIN_P
     if config.VLM_MAX_TOKENS is not None:
         params["max_completion_tokens"] = config.VLM_MAX_TOKENS
     if config.VLM_PRESENCE_PENALTY is not None:
@@ -57,8 +59,8 @@ def _build_docling_options() -> dict:
     Build Docling conversion options based on pipeline mode.
 
     Pipeline modes:
-        - "vlm": Granite-258M runs LOCALLY in container (fast, best quality)
-                 Picture descriptions optionally use VISION_API_URL
+        - "vlm": Uses Vision API as external VLM (fast, best quality, no local VRAM).
+                 Falls back to local Granite-258M if no VISION_API_URL is set.
         - "standard": EasyOCR + Tableformer (lighter, no VLM needed)
 
     Returns:
@@ -71,21 +73,53 @@ def _build_docling_options() -> dict:
     }
 
     if config.DOCLING_PIPELINE == "vlm":
-        # VLM pipeline: Granite-258M runs locally in container
         options["pipeline"] = "vlm"
-        options["vlm_pipeline_model_local"] = {
-            "repo_id": config.DOCLING_VLM_REPO_ID,
-            "inference_framework": "transformers",
-            "transformers_model_type": "automodel-imagetexttotext",
-            "prompt": "Convert this page to docling.",
-            "response_format": "doctags",
-            "scale": 2.0,
-            "temperature": 0.0,
-            "extra_generation_config": {
-                "skip_special_tokens": False,
-                "max_new_tokens": config.DOCLING_VLM_MAX_TOKENS
+
+        if config.VISION_API_URL:
+            # External VLM via API (recommended: fast, no local VRAM)
+            # Build params with Qwen3-VL recommended sampling (temperature=0 causes repetitions)
+            vlm_params = {
+                "model": config.VISION_MODEL,
+                "max_completion_tokens": config.DOCLING_VLM_MAX_TOKENS,
             }
-        }
+            if config.VLM_TEMPERATURE is not None:
+                vlm_params["temperature"] = config.VLM_TEMPERATURE
+            if config.VLM_TOP_P is not None:
+                vlm_params["top_p"] = config.VLM_TOP_P
+            if config.VLM_TOP_K is not None:
+                vlm_params["top_k"] = config.VLM_TOP_K
+            if config.VLM_MIN_P is not None:
+                vlm_params["min_p"] = config.VLM_MIN_P
+            if config.VLM_PRESENCE_PENALTY is not None:
+                vlm_params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
+            if config.VLM_REPETITION_PENALTY is not None:
+                vlm_params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
+
+            options["vlm_pipeline_model_api"] = {
+                "url": f"{config.VISION_API_URL}/chat/completions",
+                "params": vlm_params,
+                "headers": _build_auth_headers(),
+                "prompt": "Convert this page to markdown. Do not miss any text and only output the bare markdown!",
+                "response_format": "markdown",
+                "timeout": config.TIMEOUT_LLM,
+                "scale": 2.0,
+                "concurrency": config.DOCLING_VLM_CONCURRENCY,
+            }
+        else:
+            # Local Granite-258M (slow, requires manual model setup, ~24GB VRAM)
+            options["vlm_pipeline_model_local"] = {
+                "repo_id": config.DOCLING_VLM_REPO_ID,
+                "inference_framework": "transformers",
+                "transformers_model_type": "automodel-imagetexttotext",
+                "prompt": "Convert this page to docling.",
+                "response_format": "doctags",
+                "scale": 2.0,
+                "temperature": 0.0,
+                "extra_generation_config": {
+                    "skip_special_tokens": False,
+                    "max_new_tokens": config.DOCLING_VLM_MAX_TOKENS
+                }
+            }
 
     else:
         # Standard pipeline: EasyOCR + Tableformer
@@ -314,7 +348,7 @@ async def _check_docling_available() -> bool:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{docling_url}/health")
             return resp.status_code == 200
-    except:
+    except Exception:
         return False
 
 
