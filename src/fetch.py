@@ -2,10 +2,11 @@
 Content fetching with deployment-flexible extraction.
 
 Web extraction tiers (auto mode):
-1. Vision: Chrome extension + VLM (best quality, local dev only)
-2. Docker Playwright: Headless Chromium with ad blocking, cookie handling (Docker default)
+1. Vision: Chrome extension screenshot + VLM analysis (best quality, local dev only)
+2. Docker Playwright + LLM: Headless Chromium -> HTML -> strip -> LLM -> markdown (good quality)
+3. Docker Playwright + regex: Headless Chromium -> HTML -> regex/MarkItDown -> markdown (fallback)
 
-MarkItDown is used only for HTML-to-markdown conversion of Playwright output,
+MarkItDown is used only for HTML-to-markdown conversion of Playwright output as a fallback,
 NOT as a direct web fetcher (it doesn't render JS and produces garbage on modern sites).
 """
 
@@ -50,6 +51,30 @@ Output format:
 [Main content in markdown format...]
 
 If the page appears to be a login page, error page, or CAPTCHA, respond with: "ERROR: [reason]"
+"""
+
+# Prompt for LLM-based text extraction (no screenshot, text-only input)
+WEB_LLM_EXTRACTION_PROMPT = """You are extracting the main content from a web page's text dump.
+
+You receive the raw text extracted from the page HTML (with boilerplate already stripped).
+Your task: Convert this into a clean, well-structured markdown article.
+
+Guidelines:
+- Extract the MAIN CONTENT only (article, documentation, blog post, product info)
+- IGNORE any remaining: navigation items, sidebar text, ad text, cookie notices, footer links
+- Use proper markdown headings (# ## ###) to reflect the content hierarchy
+- Preserve important data: prices, specs, dates, names, code, facts
+- Keep code blocks properly formatted with ``` fences
+- Format tables as markdown tables if table data is present
+- Preserve lists as markdown lists (- or 1.)
+- Write clean, readable markdown
+
+Output format:
+# [Title]
+
+[Main content in markdown...]
+
+If the content appears to be a login page, error page, or CAPTCHA, respond with: "ERROR: [reason]"
 """
 
 
@@ -204,9 +229,16 @@ async def get_webpage(url: str, section: int = None, force_method: str = None) -
                 from docker_playwright import extract_webpage
                 html = await extract_webpage(url, wait_for_js=config.WEB_WAIT_FOR_JS)
                 if html and len(html) > 500:
-                    markdown = _html_to_markdown(html, url)
-                    extraction_method = 'docker_playwright'
-                    print(f"[Web] OK: Docker Playwright: {len(markdown)} chars")
+                    # Try LLM extraction first, fall back to regex/MarkItDown
+                    llm_result = await _extract_with_llm(html, url)
+                    if llm_result and len(llm_result) > 200:
+                        markdown = llm_result
+                        extraction_method = 'docker_playwright+llm'
+                        print(f"[Web] OK: Docker Playwright + LLM: {len(markdown)} chars")
+                    else:
+                        markdown = _html_to_markdown(html, url)
+                        extraction_method = 'docker_playwright'
+                        print(f"[Web] OK: Docker Playwright + regex: {len(markdown)} chars")
             except Exception as e:
                 errors.append(f"Docker Playwright: {e}")
         else:
@@ -239,16 +271,24 @@ async def get_webpage(url: str, section: int = None, force_method: str = None) -
                 errors.append(f"Vision: {e}")
                 print(f"[Web] FAIL: Vision failed, trying next...")
 
-        # Tier 2: Docker Playwright (headless Chromium, ad blocking, cookie handling)
+        # Tier 2/3: Docker Playwright (fetch HTML once, try LLM then regex fallback)
         if not markdown and has_docker_playwright:
             try:
                 print(f"[Web] Trying Docker Playwright for: {url[:60]}...")
                 from docker_playwright import extract_webpage
                 html = await extract_webpage(url, wait_for_js=config.WEB_WAIT_FOR_JS)
                 if html and len(html) > 500:
-                    markdown = _html_to_markdown(html, url)
-                    extraction_method = 'docker_playwright'
-                    print(f"[Web] OK: Docker Playwright: {len(markdown)} chars")
+                    # Tier 2: Try LLM-based extraction first
+                    llm_result = await _extract_with_llm(html, url)
+                    if llm_result and len(llm_result) > 200:
+                        markdown = llm_result
+                        extraction_method = 'docker_playwright+llm'
+                        print(f"[Web] OK: Docker Playwright + LLM: {len(markdown)} chars")
+                    else:
+                        # Tier 3: Fall back to regex/MarkItDown
+                        markdown = _html_to_markdown(html, url)
+                        extraction_method = 'docker_playwright'
+                        print(f"[Web] OK: Docker Playwright + regex: {len(markdown)} chars")
             except Exception as e:
                 errors.append(f"Docker Playwright: {e}")
                 print(f"[Web] FAIL: Docker Playwright failed, trying next...")
@@ -355,6 +395,117 @@ async def _extract_with_vision(url: str) -> str | None:
                     
     except Exception as e:
         print(f"[Vision Extract Error] {e}")
+        return None
+
+
+def _strip_html_for_llm(html: str, max_chars: int = 50000) -> str:
+    """Strip HTML to clean text for LLM extraction.
+
+    Removes scripts, styles, SVGs, nav/header/footer boilerplate,
+    HTML comments, and excessive whitespace. Preserves structural
+    markers (headings, list items, table cells) so the LLM can
+    understand page layout. Truncates to max_chars.
+    """
+    import html as html_module
+
+    text = html
+
+    # Remove entire blocks that are never useful content
+    for pattern in [
+        r'<script[^>]*>.*?</script>',
+        r'<style[^>]*>.*?</style>',
+        r'<svg[^>]*>.*?</svg>',
+        r'<nav[^>]*>.*?</nav>',
+        r'<header[^>]*>.*?</header>',
+        r'<footer[^>]*>.*?</footer>',
+        r'<aside[^>]*>.*?</aside>',
+        r'<!--.*?-->',
+        r'<noscript[^>]*>.*?</noscript>',
+    ]:
+        text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Convert structural HTML to readable markers
+    text = re.sub(r'<h([1-6])[^>]*>(.*?)</h\1>', r'\n\n<h\1>\2</h\1>\n\n', text,
+                  flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<p[^>]*>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<li[^>]*>', '\n- ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<tr[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<td[^>]*>', ' | ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<th[^>]*>', ' | ', text, flags=re.IGNORECASE)
+
+    # Strip remaining HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Decode HTML entities
+    text = html_module.unescape(text)
+
+    # Collapse excessive whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r' {2,}', ' ', text)
+
+    # Strip leading/trailing whitespace from each line
+    lines = [line.strip() for line in text.split('\n')]
+    text = '\n'.join(lines)
+    text = text.lstrip('\n')
+
+    # Truncate to max_chars
+    if len(text) > max_chars:
+        text = text[:max_chars] + '\n\n[Content truncated...]'
+
+    return text
+
+
+async def _extract_with_llm(html: str, url: str) -> str | None:
+    """Extract webpage content by sending cleaned HTML text to LLM.
+
+    Tier 2 of the extraction pipeline:
+    1. Strip HTML to clean text (remove scripts, styles, nav, etc.)
+    2. Send cleaned text to LLM with extraction prompt
+    3. LLM returns structured markdown
+
+    Returns None if LLM is unavailable or produces poor results,
+    allowing the caller to fall through to regex/MarkItDown.
+    """
+    if not config.VISION_API_URL:
+        return None
+
+    # Strip HTML to clean text
+    cleaned_text = _strip_html_for_llm(html)
+
+    if not cleaned_text or len(cleaned_text) < 100:
+        print("[LLM Extract] Cleaned text too short, skipping LLM")
+        return None
+
+    print(f"[LLM Extract] Sending {len(cleaned_text)} chars to LLM...")
+
+    # Build text-only messages (no image)
+    messages = [
+        {"role": "system", "content": "You are a web content extraction expert."},
+        {"role": "user", "content": f"URL: {url}\n\n{WEB_LLM_EXTRACTION_PROMPT}\n\nPAGE TEXT:\n\n{cleaned_text}"}
+    ]
+
+    try:
+        result = await _call_llm(messages, max_tokens=8000)
+
+        if not result:
+            print("[LLM Extract] LLM returned empty result")
+            return None
+
+        if result.startswith("ERROR:"):
+            print(f"[LLM Extract] Page issue: {result}")
+            return None
+
+        if len(result) < 100:
+            print(f"[LLM Extract] Result too short ({len(result)} chars), falling back")
+            return None
+
+        print(f"[LLM Extract] OK: {len(cleaned_text)} chars input -> {len(result)} chars markdown")
+        return result
+
+    except Exception as e:
+        print(f"[LLM Extract] Failed: {e}")
         return None
 
 
