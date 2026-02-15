@@ -159,6 +159,7 @@ services:
       - gpu
     environment:
       - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+      - DOCLING_SERVE_MAX_SYNC_WAIT=600
     volumes:
       # Persist HF model downloads (including Granite-258M for VLM pipeline)
       - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
