@@ -45,11 +45,14 @@ services:
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
-      # Other settings
+      # Browser settings
       - PLAYWRIGHT_MCP_TOKEN=${PLAYWRIGHT_MCP_TOKEN:-}
+      - PLAYWRIGHT_DOCKER_HEADED=${PLAYWRIGHT_DOCKER_HEADED:-true}
       - CACHE_DIR=/app/cache
+      - PRELOAD_DIR=/app/preload
     volumes:
       - ./cache:/app/cache
+      - ./preload:/app/preload:ro
       - ./.env:/app/.env:ro
     depends_on:
       searxng:

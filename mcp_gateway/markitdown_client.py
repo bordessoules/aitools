@@ -17,7 +17,8 @@ from pathlib import Path
 
 import httpx
 
-import config
+from . import config
+from .utils import extract_title as _shared_extract_title
 
 # Import markitdown - may not be installed
 try:
@@ -175,16 +176,8 @@ def convert_file(file_path: str | Path, use_vision: bool = True) -> dict:
 
 
 def _extract_title(text: str) -> str:
-    """Extract title from markdown h1 or first non-empty line."""
-    import re
-    match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
-    if match:
-        return match.group(1).strip()
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    for line in lines[:5]:
-        if not line.startswith('<') and len(line) < 100:
-            return line
-    return 'Untitled'
+    """Extract title from markdown content. Delegates to shared utils."""
+    return _shared_extract_title(text)
 
 
 if __name__ == "__main__":

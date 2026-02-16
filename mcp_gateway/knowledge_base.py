@@ -9,7 +9,10 @@ from datetime import datetime
 
 import httpx
 
-import config
+from . import config
+from .logger import get_logger
+
+log = get_logger("kb")
 
 INDEX_NAME = "mcp_knowledge_base"
 
@@ -29,10 +32,23 @@ async def is_available() -> bool:
         return False
 
 
+async def doc_exists(url: str) -> bool:
+    """Check if a document with the given URL is already indexed."""
+    try:
+        doc_id = _doc_id(url)
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.head(
+                f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}"
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
 async def init_index() -> bool:
     """Initialize the knowledge base index if it doesn't exist."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_OPENSEARCH) as client:
             # Check if index exists
             resp = await client.head(f"{config.OPENSEARCH_URL}/{INDEX_NAME}")
             if resp.status_code == 200:
@@ -78,7 +94,7 @@ async def init_index() -> bool:
             )
             return resp.status_code in (200, 201)
     except Exception as e:
-        print(f"OpenSearch init error: {e}")
+        log.error("OpenSearch init error: %s", e)
         return False
 
 
@@ -113,7 +129,7 @@ async def add_document(url: str, title: str, content: str, chunks: list, source_
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_OPENSEARCH) as client:
             resp = await client.put(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}",
                 json=doc
@@ -141,26 +157,53 @@ async def search(query: str, max_results: int = 5) -> str:
     
     await init_index()
     
+    # Use bool query: flat multi_match on title/content + nested query on chunks
     search_body = {
         "size": max_results,
         "query": {
-            "multi_match": {
-                "query": query,
-                "fields": ["title^2", "content", "chunks.text"],
-                "type": "best_fields",
-                "fuzziness": "AUTO"
+            "bool": {
+                "should": [
+                    {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["title^2", "content"],
+                            "type": "best_fields",
+                            "fuzziness": "AUTO"
+                        }
+                    },
+                    {
+                        "nested": {
+                            "path": "chunks",
+                            "query": {
+                                "match": {
+                                    "chunks.text": {
+                                        "query": query,
+                                        "fuzziness": "AUTO"
+                                    }
+                                }
+                            },
+                            "inner_hits": {
+                                "size": 1,
+                                "highlight": {
+                                    "fields": {
+                                        "chunks.text": {"fragment_size": 200, "number_of_fragments": 1}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
             }
         },
         "highlight": {
             "fields": {
-                "content": {"fragment_size": 200, "number_of_fragments": 2},
-                "chunks.text": {"fragment_size": 200, "number_of_fragments": 1}
+                "content": {"fragment_size": 200, "number_of_fragments": 2}
             }
         }
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_OPENSEARCH) as client:
             resp = await client.post(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json=search_body
@@ -182,9 +225,17 @@ async def search(query: str, max_results: int = 5) -> str:
                 url = source.get("url", "")
                 score = hit.get("_score", 0)
                 
-                # Get highlighted snippets
+                # Get highlighted snippets (from content or nested chunk inner_hits)
                 highlights = hit.get("highlight", {})
-                snippets = highlights.get("content", []) or highlights.get("chunks.text", [])
+                snippets = highlights.get("content", [])
+                if not snippets:
+                    # Check nested inner_hits for chunk highlights
+                    inner = hit.get("inner_hits", {}).get("chunks", {}).get("hits", {}).get("hits", [])
+                    for ih in inner:
+                        chunk_hl = ih.get("highlight", {}).get("chunks.text", [])
+                        if chunk_hl:
+                            snippets = chunk_hl
+                            break
                 snippet = snippets[0][:300] if snippets else source.get("content", "")[:300]
                 
                 lines.append(f"{i}. {title}")
@@ -206,7 +257,7 @@ async def list_documents(max_results: int = 20) -> str:
     await init_index()
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_OPENSEARCH) as client:
             resp = await client.post(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json={
@@ -250,7 +301,7 @@ async def remove_document(url: str) -> str:
     doc_id = _doc_id(url)
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_OPENSEARCH) as client:
             resp = await client.delete(f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}")
             if resp.status_code == 200:
                 return f"Removed from knowledge base: {url[:60]}..."

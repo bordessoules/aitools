@@ -152,9 +152,8 @@ Write-Host "  Using Python: $pythonPath" -ForegroundColor Gray
 Write-Host "`n[3/4] Testing imports..." -ForegroundColor Yellow
 $testResult = python -c "
 import sys
-sys.path.insert(0, 'src')
 try:
-    import config
+    from mcp_gateway import config
     print('[OK] Config loaded')
     print(f'  SearXNG: {config.SEARXNG_URL}')
     print(f'  Vision API: {config.VISION_API_URL or \"(not configured)\"}')
@@ -187,12 +186,12 @@ if ($Transport -eq "stdio") {
     Write-Host "  Docker services must be running separately" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    python -m src.gateway -t stdio
+    python -m mcp_gateway.gateway -t stdio
 } else {
     Write-Host "  Transport: SSE" -ForegroundColor Cyan
     Write-Host "  Gateway: http://localhost:$Port" -ForegroundColor Cyan
     Write-Host "  Press Ctrl+C to stop" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    python -m src.gateway -t sse -p $Port
+    python -m mcp_gateway.gateway -t sse -p $Port
 }

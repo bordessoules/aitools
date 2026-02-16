@@ -1,12 +1,12 @@
 """URL routing, search, and URL classification."""
 
 import re
-from urllib.parse import urlparse
 from pathlib import Path
+from urllib.parse import urlparse
+
 import httpx
 
-# Import all configuration from centralized config module
-from config import (
+from .config import (
     SEARXNG_URL,
     TIMEOUT_SEARCH,
     IMAGE_EXTENSIONS,

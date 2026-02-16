@@ -1,14 +1,15 @@
 # MCP Gateway - Docker Image
-# Supports Tier 2/3 deployments (MarkItDown without Chrome)
+# Includes Chromium (headless + headed via Xvfb) for web extraction
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies + Xvfb for headed Playwright mode
 RUN apt-get update && apt-get install -y \
     curl \
     ffmpeg \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast Python package management
@@ -25,10 +26,13 @@ RUN uv pip install --system -r requirements.txt && \
 RUN playwright install chromium --with-deps
 
 # Copy application code
-COPY src/ ./src/
+COPY mcp_gateway/ ./mcp_gateway/
 
-# Create cache directory
-RUN mkdir -p cache
+# Create cache, auth, and preload directories
+RUN mkdir -p cache auth preload
+
+# Default: headed mode with Xvfb (better bot resistance than headless)
+ENV PLAYWRIGHT_DOCKER_HEADED=true
 
 # Expose gateway port
 EXPOSE 8000
@@ -37,5 +41,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run gateway
-CMD ["python", "-m", "src.gateway", "-t", "sse", "-p", "8000"]
+# Start with Xvfb if headed mode enabled, otherwise headless
+CMD if [ "$PLAYWRIGHT_DOCKER_HEADED" = "true" ]; then \
+        Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR -noreset & \
+        sleep 1; \
+        DISPLAY=:99 python -m mcp_gateway.gateway -t sse -p 8000; \
+    else \
+        python -m mcp_gateway.gateway -t sse -p 8000; \
+    fi

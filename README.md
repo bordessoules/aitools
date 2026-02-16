@@ -49,6 +49,12 @@ docker compose --profile standard up -d
 | `fetch(url)` | Retrieve content | Getting content from any URL (one-time use) |
 | `fetch_section(url, section)` | Get document section | When fetch returns a table of contents |
 
+### Processing & Cache Tools
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| `process(content, task, prompt)` | LLM text processing | Summarize, extract, translate, analyze fetched content |
+| `cache(action, url)` | Manage document cache | View stats, list cached docs, clear cache |
+
 ### Knowledge Base Tools (Requires OpenSearch)
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
@@ -193,14 +199,20 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for full configuration options.
 ## Architecture
 
 ```
-src/
-├── gateway.py             # MCP tool definitions
+mcp_gateway/
+├── __init__.py            # Package init (version)
+├── gateway.py             # MCP tool definitions, startup health check
 ├── routing.py             # URL classification, search
-├── fetch.py               # Web extraction (MarkItDown → Playwright → HTTP)
+├── fetch.py               # Web extraction (Vision → Playwright+LLM → regex)
 ├── documents.py           # Docling integration, caching, chunking
+├── processor.py           # LLM-based content processing (summarize, extract, etc.)
+├── llm.py                 # Shared LLM/VLM utilities
 ├── markitdown_client.py   # MarkItDown client + Vision AI
+├── docker_playwright.py   # Docker Playwright with auth, ad blocking
 ├── knowledge_base.py      # OpenSearch integration
-└── config.py              # Configuration
+├── config.py              # Configuration (single source of truth)
+├── logger.py              # Centralized logging
+└── utils.py               # Shared helpers (safe_text, extract_title)
 ```
 
 **Document Pipeline:**

@@ -15,43 +15,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-import config
+
+from . import config
+from .llm import build_vlm_params, build_auth_headers
+from .logger import get_logger
+from .utils import safe_text, extract_title
+
+log = get_logger("documents")
 
 # Import MarkItDown client for fallback support
 try:
-    from markitdown_client import should_use_markitdown, convert_file as md_convert_file
+    from .markitdown_client import should_use_markitdown, convert_file as md_convert_file
     MARKITDOWN_AVAILABLE = True
 except ImportError:
     MARKITDOWN_AVAILABLE = False
-
-
-def _build_vision_params() -> dict:
-    """Build vision model sampling parameters from config."""
-    params = {"model": config.VISION_MODEL}
-
-    if config.VLM_TEMPERATURE is not None:
-        params["temperature"] = config.VLM_TEMPERATURE
-    if config.VLM_TOP_P is not None:
-        params["top_p"] = config.VLM_TOP_P
-    if config.VLM_TOP_K is not None:
-        params["top_k"] = config.VLM_TOP_K
-    if config.VLM_MIN_P is not None:
-        params["min_p"] = config.VLM_MIN_P
-    if config.VLM_MAX_TOKENS is not None:
-        params["max_completion_tokens"] = config.VLM_MAX_TOKENS
-    if config.VLM_PRESENCE_PENALTY is not None:
-        params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
-    if config.VLM_REPETITION_PENALTY is not None:
-        params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
-
-    return params
-
-
-def _build_auth_headers() -> dict:
-    """Build authorization headers for vision API calls."""
-    if config.VISION_API_KEY and config.VISION_API_KEY != "not-needed":
-        return {"Authorization": f"Bearer {config.VISION_API_KEY}"}
-    return {}
 
 
 def _build_docling_options() -> dict:
@@ -77,28 +54,12 @@ def _build_docling_options() -> dict:
 
         if config.VISION_API_URL:
             # External VLM via API (recommended: fast, no local VRAM)
-            # Build params with Qwen3-VL recommended sampling (temperature=0 causes repetitions)
-            vlm_params = {
-                "model": config.VISION_MODEL,
-                "max_completion_tokens": config.DOCLING_VLM_MAX_TOKENS,
-            }
-            if config.VLM_TEMPERATURE is not None:
-                vlm_params["temperature"] = config.VLM_TEMPERATURE
-            if config.VLM_TOP_P is not None:
-                vlm_params["top_p"] = config.VLM_TOP_P
-            if config.VLM_TOP_K is not None:
-                vlm_params["top_k"] = config.VLM_TOP_K
-            if config.VLM_MIN_P is not None:
-                vlm_params["min_p"] = config.VLM_MIN_P
-            if config.VLM_PRESENCE_PENALTY is not None:
-                vlm_params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
-            if config.VLM_REPETITION_PENALTY is not None:
-                vlm_params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
+            vlm_params = build_vlm_params(max_tokens=config.DOCLING_VLM_MAX_TOKENS)
 
             options["vlm_pipeline_model_api"] = {
                 "url": f"{config.VISION_API_URL}/chat/completions",
                 "params": vlm_params,
-                "headers": _build_auth_headers(),
+                "headers": build_auth_headers(),
                 "prompt": "Convert this page to markdown. Do not miss any text and only output the bare markdown!",
                 "response_format": "markdown",
                 "timeout": config.TIMEOUT_LLM,
@@ -133,9 +94,9 @@ def _build_docling_options() -> dict:
         options["do_picture_description"] = True
         options["picture_description_api"] = {
             "url": f"{config.VISION_API_URL}/chat/completions",
-            "params": _build_vision_params(),
+            "params": build_vlm_params(),
             "timeout": config.TIMEOUT_LLM,
-            "headers": _build_auth_headers(),
+            "headers": build_auth_headers(),
             "prompt": "Describe this image in detail, including any text, diagrams, charts, or visual elements.",
         }
 
@@ -163,32 +124,35 @@ def _url_hash(url: str) -> str:
 
 def _init_db():
     """Initialize SQLite schema if not exists."""
-    with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS docs (
-                url_hash TEXT PRIMARY KEY,
-                url TEXT,
-                title TEXT,
-                markdown TEXT,
-                backend TEXT,  -- Extraction backend used (docling_gpu, markitdown, vision, etc.)
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS chunks (
-                url_hash TEXT,
-                idx INTEGER,
-                heading TEXT,
-                text TEXT,
-                tokens INTEGER,
-                PRIMARY KEY (url_hash, idx)
-            );
-        """)
-        
-        # Migration: Add backend column if it doesn't exist (for existing databases)
-        cursor = conn.execute("PRAGMA table_info(docs)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "backend" not in columns:
-            conn.execute("ALTER TABLE docs ADD COLUMN backend TEXT")
-            print("[DB Migration] Added 'backend' column to docs table")
+    try:
+        with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS docs (
+                    url_hash TEXT PRIMARY KEY,
+                    url TEXT,
+                    title TEXT,
+                    markdown TEXT,
+                    backend TEXT,  -- Extraction backend used (docling_gpu, markitdown, vision, etc.)
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS chunks (
+                    url_hash TEXT,
+                    idx INTEGER,
+                    heading TEXT,
+                    text TEXT,
+                    tokens INTEGER,
+                    PRIMARY KEY (url_hash, idx)
+                );
+            """)
+
+            # Migration: Add backend column if it doesn't exist (for existing databases)
+            cursor = conn.execute("PRAGMA table_info(docs)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "backend" not in columns:
+                conn.execute("ALTER TABLE docs ADD COLUMN backend TEXT")
+                log.info("DB migration: added 'backend' column to docs table")
+    except sqlite3.Error as e:
+        log.error("Failed to initialize cache database: %s", e)
 
 
 def get(url: str) -> Doc | None:
@@ -287,7 +251,7 @@ def format_toc(doc: Doc) -> str:
         preview = c['text'][:80].replace('\n', ' ')
         lines.append(f"[{i}] {c['heading']}: {preview}... ({c['tokens']}t)")
     
-    return _safe_text("\n".join(lines))
+    return safe_text("\n".join(lines))
 
 
 def format_chunk(doc: Doc, section: int) -> str:
@@ -303,7 +267,7 @@ def format_chunk(doc: Doc, section: int) -> str:
         nav.append(f"fetch_section(url, section={section + 1}) for next")
     
     nav_str = f"\n\n[{', '.join(nav)}]" if nav else ""
-    return _safe_text(f"# {c['heading']}\n\n{c['text']}{nav_str}")
+    return safe_text(f"# {c['heading']}\n\n{c['text']}{nav_str}")
 
 
 async def fetch_and_cache(url: str) -> Doc | None:
@@ -333,7 +297,7 @@ async def fetch_and_cache(url: str) -> Doc | None:
     
     # Fallback to MarkItDown (works without GPU)
     if MARKITDOWN_AVAILABLE:
-        print(f"[Doc] Docling unavailable or failed, using MarkItDown fallback...")
+        log.info("Docling unavailable or failed, using MarkItDown fallback")
         doc = await _fetch_with_markitdown(url)
         if doc:
             return doc
@@ -381,12 +345,12 @@ async def _fetch_with_docling(url: str) -> Doc | None:
             if not markdown:
                 return None
             
-            title = _extract_title(markdown) or "Untitled"
+            title = extract_title(markdown) or "Untitled"
             backend = "docling_gpu" if config.USE_DOCLING_GPU else "docling_cpu"
             save(url, title, markdown, backend)
             return get(url)
     except Exception as e:
-        print(f"[Docling Error] {e}")
+        log.error("Docling error: %s", e)
         return None
 
 
@@ -403,7 +367,7 @@ async def _fetch_with_markitdown(url: str) -> Doc | None:
         )
         
         if not result['success']:
-            print(f"[MarkItDown Error] {result.get('error', 'Unknown')}")
+            log.error("MarkItDown error: %s", result.get('error', 'Unknown'))
             return None
         
         markdown = result['text_content']
@@ -415,7 +379,7 @@ async def _fetch_with_markitdown(url: str) -> Doc | None:
         save(url, title, markdown, "markitdown")
         return get(url)
     except Exception as e:
-        print(f"[MarkItDown Error] {e}")
+        log.error("MarkItDown error: %s", e)
         return None
 
 
@@ -459,28 +423,3 @@ def _chunk_content(text: str) -> list[dict]:
     return chunks or [{"heading": "Content", "text": text, "tokens": len(text) // config.CHARS_PER_TOKEN}]
 
 
-def _extract_title(text: str) -> str | None:
-    """Extract title from markdown h1 or first non-empty line."""
-    match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
-    if match:
-        return match.group(1).strip()
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    for line in lines[:5]:
-        if not line.startswith('<') and len(line) < 100:
-            return line
-    return None
-
-
-def _safe_text(text: str) -> str:
-    """Remove problematic Unicode for Windows console."""
-    replacements = {
-        '\U0001f525': '[fire]', '\U0001f680': '[rocket]', '\u2217': '*',
-        '\u2013': '-', '\u2014': '--', '\u2018': "'", '\u2019': "'",
-        '\u201c': '"', '\u201d': '"', '\u2705': '[check]',
-        '\u2713': '[check]', '\u2714': '[check]', '\u2717': '[x]',
-        '\u2718': '[x]', '\u221a': '[sqrt]', '\u2022': '*',
-        '\u2192': '->', '\u2190': '<-', '\u2191': '^', '\u2193': 'v',
-    }
-    for char, repl in replacements.items():
-        text = text.replace(char, repl)
-    return text.encode('ascii', 'ignore').decode('ascii')

@@ -15,7 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY src/ ./src/
+COPY mcp_gateway/ ./mcp_gateway/
 
 # Create auth directory for pre-authenticated sessions
 RUN mkdir -p /app/auth
@@ -39,8 +39,8 @@ CMD if [ "$PLAYWRIGHT_DOCKER_HEADED" = "true" ]; then \
         echo "Starting with Xvfb (headed mode)..."; \
         Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR -noreset & \
         sleep 2; \
-        DISPLAY=:99 python -m src.gateway -t sse -p 8000; \
+        DISPLAY=:99 python -m mcp_gateway.gateway -t sse -p 8000; \
     else \
         echo "Starting in headless mode..."; \
-        python -m src.gateway -t sse -p 8000; \
+        python -m mcp_gateway.gateway -t sse -p 8000; \
     fi

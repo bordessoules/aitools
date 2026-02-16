@@ -38,7 +38,7 @@ def main():
     print("MCP Gateway Setup")
     print("="*60)
     
-    if not Path("src/gateway.py").exists():
+    if not Path("mcp_gateway/gateway.py").exists():
         print("[ERROR] Run from project root directory")
         sys.exit(1)
     

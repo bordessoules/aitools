@@ -11,16 +11,22 @@ This module provides:
 import asyncio
 import os
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.async_api import Playwright
 
 try:
     from playwright.async_api import async_playwright, Browser, BrowserContext, Page
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
-    Browser = BrowserContext = Page = None
+    Browser = BrowserContext = Page = None  # type: ignore[assignment,misc]
 
-import config
+from . import config
+from .logger import get_logger
+
+log = get_logger("playwright")
 
 # Common ad/tracking domains to block
 AD_DOMAINS = {
@@ -75,11 +81,11 @@ async def is_available() -> bool:
             return True
     except Exception as e:
         error_msg = str(e).encode('ascii', 'ignore').decode('ascii')
-        print(f"[Docker Playwright] Not available: {error_msg[:100]}")
+        log.info("Not available: %s", error_msg[:100])
         return False
 
 
-async def create_browser_context(playwright, headed: Optional[bool] = None) -> tuple[Browser, BrowserContext]:
+async def create_browser_context(playwright: "Playwright", headed: bool | None = None) -> tuple[Browser, BrowserContext]:
     """
     Create browser with optional pre-authenticated session.
     
@@ -114,10 +120,10 @@ async def create_browser_context(playwright, headed: Optional[bool] = None) -> t
     # Load pre-authenticated session if available
     auth_state_path = config.PLAYWRIGHT_AUTH_STATE
     if auth_state_path.exists():
-        print(f"[Docker Playwright] Loading auth state from {auth_state_path}")
+        log.info("Loading auth state from %s", auth_state_path)
         context_options['storage_state'] = str(auth_state_path)
     else:
-        print(f"[Docker Playwright] No auth state found at {auth_state_path}")
+        log.debug("No auth state found at %s", auth_state_path)
     
     context = await browser.new_context(**context_options)
     
@@ -137,7 +143,6 @@ async def setup_ad_blocking(context: BrowserContext):
 
         # Block ad/tracking domains
         if hostname and any(ad_domain in hostname for ad_domain in AD_DOMAINS):
-            # print(f"[AdBlock] Blocked: {hostname}")
             await route.abort()
             return
         
@@ -166,10 +171,11 @@ async def handle_cookie_popup(page: Page, timeout: int = 3000) -> bool:
             button = page.locator(selector).first
             if await button.is_visible(timeout=500):
                 await button.click()
-                print(f"[Docker Playwright] Cookie popup handled: {selector}")
+                log.debug("Cookie popup handled: %s", selector)
                 await asyncio.sleep(0.5)
                 return True
-        except Exception:
+        except Exception as e:
+            log.debug("Cookie selector %s failed: %s", selector, e)
             continue
     
     return False
@@ -206,7 +212,7 @@ async def extract_webpage(url: str, wait_for_js: bool = True) -> str:
             page = await context.new_page()
             
             # Navigate
-            print(f"[Docker Playwright] Navigating to {url[:60]}...")
+            log.info("Navigating to %s...", url[:60])
             await page.goto(url, wait_until='networkidle' if wait_for_js else 'domcontentloaded')
             
             # Handle cookie popup
@@ -220,13 +226,13 @@ async def extract_webpage(url: str, wait_for_js: bool = True) -> str:
                 try:
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                     await asyncio.sleep(1)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Scroll failed: %s", e)
 
             # Get content
             content = await page.content()
             
-            print(f"[Docker Playwright] Extracted {len(content)} chars")
+            log.info("Extracted %d chars", len(content))
             return content
             
         finally:
@@ -247,8 +253,8 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
     if not PLAYWRIGHT_AVAILABLE:
         raise RuntimeError("Playwright not installed")
     
-    print(f"[Auth Setup] Creating authenticated session...")
-    print(f"[Auth Setup] This will open a browser window for you to complete login")
+    log.info("Creating authenticated session...")
+    log.info("This will open a browser window for you to complete login")
     
     async with async_playwright() as p:
         # Launch headed browser for manual interaction if needed
@@ -261,13 +267,13 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
             await page.goto(url)
             
             # Wait for manual login completion
-            print("[Auth Setup] Please complete login in the browser window...")
-            print("[Auth Setup] Press Enter when done (or wait 60s timeout)...")
+            log.info("Please complete login in the browser window...")
+            log.info("Press Enter when done (or wait 60s timeout)...")
             
             # Wait for navigation to success page
             try:
                 await page.wait_for_url("**/myaccount.google.com/**", timeout=60000)
-                print("[Auth Setup] Login detected!")
+                log.info("Login detected!")
             except Exception:
                 input("[Auth Setup] Press Enter when login is complete...")
             
@@ -276,7 +282,7 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
             auth_path.parent.mkdir(parents=True, exist_ok=True)
             
             await context.storage_state(path=str(auth_path))
-            print(f"[Auth Setup] Auth state saved to {auth_path}")
+            log.info("Auth state saved to %s", auth_path)
             
         finally:
             await browser.close()
@@ -284,40 +290,37 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
 
 # Xvfb helper for headed mode in Docker
 def start_xvfb():
-    """Start Xvfb virtual display for headed browser in Docker."""
+    """Start Xvfb virtual display for headed browser in Docker.
+
+    Normally Xvfb is started by the Dockerfile CMD before Python runs,
+    so this is only needed for one-off docker exec scripts.
+    If DISPLAY is already set, this is a no-op.
+    """
     if os.environ.get('DISPLAY'):
-        return  # Xvfb already running
-    
+        return  # Xvfb already running (started by CMD or externally)
+
     try:
         import subprocess
-        
+
         display = config.XVFB_DISPLAY
         screen = config.XVFB_SCREEN_SIZE
-        
-        # Check if Xvfb is available
-        result = subprocess.run(['which', 'Xvfb'], capture_output=True)
-        if result.returncode != 0:
-            print("[Xvfb] Xvfb not found, installing...")
-            subprocess.run(['apt-get', 'update'], check=False)
-            subprocess.run(['apt-get', 'install', '-y', 'xvfb'], check=False)
-        
-        # Start Xvfb
+
+        # Start Xvfb (must be pre-installed in the Docker image)
         subprocess.Popen([
             'Xvfb', display, '-screen', '0', screen,
             '-ac', '+extension', 'RANDR', '-noreset'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
+
         os.environ['DISPLAY'] = display
-        print(f"[Xvfb] Started on display {display}")
-        
-        # Small delay for Xvfb to initialize
+        log.info("Xvfb started on display %s", display)
+
         import time
         time.sleep(1)
-        
+
     except Exception as e:
-        print(f"[Xvfb] Failed to start: {e}")
+        log.warning("Xvfb failed to start: %s", e)
 
 
-# Initialize Xvfb if headed mode is enabled
+# Initialize Xvfb if headed mode is enabled (fallback for docker exec)
 if config.PLAYWRIGHT_DOCKER_HEADED:
     start_xvfb()

@@ -48,3 +48,8 @@ htmlcov/
 
 # Docker volumes (if any)
 *.volume/
+
+# Generated / temporary files
+nul
+docling_openapi.json
+bench_logs/

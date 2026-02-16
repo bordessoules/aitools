@@ -32,6 +32,12 @@ def _env_int(key: str) -> int | None:
     return int(val) if val else None
 
 # =============================================================================
+# LOGGING
+# =============================================================================
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# =============================================================================
 # SERVICE URLs
 # =============================================================================
 
@@ -96,6 +102,7 @@ TIMEOUT_SEARCH = int(os.getenv("TIMEOUT_SEARCH", "30"))
 TIMEOUT_BROWSER = int(os.getenv("TIMEOUT_BROWSER", "60"))
 TIMEOUT_DOCLING = int(os.getenv("TIMEOUT_DOCLING", "300"))  # 5 min for large PDFs
 TIMEOUT_LLM = int(os.getenv("TIMEOUT_LLM", "120"))
+TIMEOUT_OPENSEARCH = int(os.getenv("TIMEOUT_OPENSEARCH", "10"))
 
 # =============================================================================
 # CHUNKING CONFIGURATION
@@ -122,15 +129,16 @@ CHARS_PER_TOKEN = 4
 # Vision Model sampling - used for VLM pipeline and picture descriptions.
 # Set these to match your model's recommended sampling.
 # Tested presets:
-#   Qwen3-VL (2B/4B/8B): temp=0.7, top_p=0.8, top_k=20, presence_penalty=1.5, repetition_penalty=1.0
+#   Qwen3-VL (2B/4B/8B): temp=0.1, top_p=0.8, top_k=20, presence_penalty=0.0, repetition_penalty=1.0
 #   LFM2.5-VL-1.6B:      temp=0.1, min_p=0.15, repetition_penalty=1.05
 VLM_TEMPERATURE = _env_float("VLM_TEMPERATURE")
 VLM_TOP_P = _env_float("VLM_TOP_P")
 VLM_TOP_K = _env_int("VLM_TOP_K")
 VLM_MIN_P = _env_float("VLM_MIN_P")
-VLM_MAX_TOKENS = _env_int("VLM_MAX_TOKENS")
 VLM_PRESENCE_PENALTY = _env_float("VLM_PRESENCE_PENALTY")
 VLM_REPETITION_PENALTY = _env_float("VLM_REPETITION_PENALTY")
+# VLM_MAX_TOKENS removed — vLLM fills remaining context dynamically.
+# Callers pass explicit max_tokens when needed (e.g. Docling=4096, fetch=8000).
 
 # =============================================================================
 # BROWSER/PLAYWRIGHT
@@ -159,14 +167,15 @@ XVFB_SCREEN_SIZE = os.getenv("XVFB_SCREEN_SIZE", "1920x1080x24")
 # WEB EXTRACTION PREFERENCES
 # =============================================================================
 
-# Preferred web extraction method: "auto", "vision", "docker_playwright", "markitdown"
-# - "auto": Automatically choose best available (default)
-# - "vision": Use Chrome + Vision LLM (best quality, requires Chrome ext)
-# - "docker_playwright": Use Playwright in Docker (JS support, auth capable)
-# - "markitdown": Use MarkItDown (fast, works in Docker, good quality)
+# Preferred web extraction method: "auto", "docling", "local_chrome", "docker_playwright", "markitdown"
+# - "auto": Docling pipeline (escalates HTML sources) → Playwright+MarkItDown fallback
+# - "docling": Force Docling pipeline (direct HTTP → Docker Playwright → local Chrome)
+# - "local_chrome": Force local Chrome → Docling → tail-trim (max bot resistance)
+# - "docker_playwright": Force Docker Playwright + MarkItDown (no LLM)
+# - "markitdown": Force MarkItDown only (fast, no browser needed)
 WEB_EXTRACTION_METHOD = os.getenv("WEB_EXTRACTION_METHOD", "auto")
 
-# Whether to wait for JavaScript to execute (for vision method)
+# Whether to wait for JavaScript to execute (for Playwright-based methods)
 WEB_WAIT_FOR_JS = os.getenv("WEB_WAIT_FOR_JS", "true").lower() == "true"
 
 # =============================================================================
@@ -175,6 +184,15 @@ WEB_WAIT_FOR_JS = os.getenv("WEB_WAIT_FOR_JS", "true").lower() == "true"
 
 CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
 CACHE_DIR.mkdir(exist_ok=True)
+
+# =============================================================================
+# PRELOAD FOLDER
+# =============================================================================
+# Drop files (PDFs, docs, etc.) into this folder and they'll be indexed into
+# the knowledge base on startup.  Runs once per file — already-indexed files
+# are skipped automatically (idempotent).
+PRELOAD_DIR = Path(os.getenv("PRELOAD_DIR", "./preload"))
+PRELOAD_ON_STARTUP = os.getenv("PRELOAD_ON_STARTUP", "true").lower() == "true"
 
 # =============================================================================
 # CONTENT TYPE CLASSIFICATION

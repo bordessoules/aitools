@@ -9,26 +9,27 @@ Exposed tools:
 - kb_search(query): Search the knowledge base
 - kb_list(): List documents in knowledge base
 - kb_remove(url): Remove document from knowledge base
+- process(content, task, prompt): Process text with local LLM
+- cache(action, url): Manage document cache
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
 2. search(query) - Find new sources if needed
 3. fetch(url) - Read and evaluate content
-4. add_to_knowledge_base(url) - Save valuable content for later
+4. If valuable: add_to_knowledge_base(url) - Save for later
+5. process(content, task) - Post-process fetched content (summarize, extract, translate, analyze)
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
+import httpx
 from mcp.server.fastmcp import FastMCP
 
-import config
-import routing
-import fetch as fetch_module
-import documents
-import knowledge_base as kb
+from . import config
+from . import documents
+from . import fetch as fetch_module
+from . import knowledge_base as kb
+from . import preload as preload_module
+from . import processor
+from . import routing
 
 mcp = FastMCP("mcp-gateway", host="0.0.0.0")
 
@@ -57,37 +58,42 @@ async def search(query: str) -> str:
 
 
 @mcp.tool()
-async def fetch(url: str) -> str:
+async def fetch(url: str, force_refresh: bool = False) -> str:
     """
     Fetch content from any URL for immediate reading.
-    
+
     This is for ONE-TIME USE only. Content is not saved for later reference.
     Use this to read and evaluate whether content is worth saving.
-    
+
     Handles content types automatically:
-    - Web pages: Vision → Docker Playwright → MarkItDown
+    - Web pages: Docling pipeline (escalating HTML sources) → tail-trim
     - PDFs/DOCs: Docling → MarkItDown fallback
-    - Images: Described via vision AI
+    - Images: Described via Vision AI (Qwen VL)
     - GitHub repos: README extracted
-    
+
     SMART SIZE HANDLING:
     - Small documents: Returns full content immediately
     - Large documents: Returns a table of contents with section numbers.
-      When you see "This is the table of contents", use fetch_section(url, section=N) 
+      When you see "This is the table of contents", use fetch_section(url, section=N)
       to retrieve the specific section you need.
-    
+
     WORKFLOW:
     1. fetch(url) - Read and evaluate the content
     2. If valuable: call add_to_knowledge_base(url) to save it
-    
+
     Args:
         url: Any URL to fetch content from
-    
+        force_refresh: Bypass cache and re-fetch content (useful for dynamic/stale pages)
+
     Returns:
         Document content, or table of contents if document is large
     """
     url = routing.normalize_url(url)
     handler = routing.classify(url)
+
+    # Clear cache if force_refresh requested
+    if force_refresh:
+        documents.delete(url)
     
     # Images: describe via vision
     if handler == "image":
@@ -266,14 +272,163 @@ async def kb_list() -> str:
 async def kb_remove(url: str) -> str:
     """
     Remove a document from the knowledge base.
-    
+
     Args:
         url: URL of the document to remove (must match the URL used in add_to_knowledge_base)
-    
+
     Returns:
         Confirmation of removal or error message
     """
     return await kb.remove_document(url)
+
+
+@mcp.tool()
+async def process(content: str, task: str = "summarize", prompt: str | None = None) -> str:
+    """
+    Process text content with a local LLM.
+
+    Use this to post-process content retrieved via fetch(). Great for
+    summarizing articles, extracting structured data, translating, or
+    analyzing sentiment.
+
+    Built-in tasks:
+    - "summarize": Concise summary of key points
+    - "extract": Extract structured data (names, dates, prices, entities)
+    - "translate": Translate content (default: to English)
+    - "analyze": Sentiment, tone, themes, and patterns
+
+    You can also provide a custom prompt to override the built-in tasks.
+
+    Args:
+        content: Text content to process
+        task: Built-in task name ("summarize", "extract", "translate", "analyze")
+        prompt: Custom instruction (overrides task if provided)
+
+    Returns:
+        Processed content from LLM
+
+    Examples:
+        process(article_text, task="summarize")
+        process(product_page, prompt="Extract the price and availability")
+        process(foreign_text, task="translate")
+    """
+    return await processor.process(content, task=task, prompt=prompt)
+
+
+@mcp.tool()
+async def cache(action: str = "stats", url: str = "") -> str:
+    """
+    Manage the document cache.
+
+    Use this to inspect or clean up cached documents. Cached documents
+    are used by fetch() to avoid re-downloading content.
+
+    Actions:
+    - "stats": Show cache statistics (document count, chunk count)
+    - "list": List cached documents (most recent first, max 20)
+    - "clear": Remove a specific URL from cache (requires url parameter)
+    - "clear_all": Remove ALL cached documents
+
+    Args:
+        action: Cache action ("stats", "list", "clear", "clear_all")
+        url: URL to clear (only used with action="clear")
+
+    Returns:
+        Cache information or confirmation message
+    """
+    return documents.cache_action(action, url)
+
+
+async def startup_health_check():
+    """Check which services are available on startup and log status."""
+
+    checks = []
+
+    # SearXNG
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{config.SEARXNG_URL}/healthz")
+            if resp.status_code == 200:
+                checks.append(("[OK] SearXNG", True))
+            else:
+                checks.append((f"[WARN] SearXNG responded {resp.status_code}", False))
+    except Exception:
+        checks.append(("[WARN] SearXNG not reachable - search will not work", False))
+
+    # Vision API / LLM
+    if config.VISION_API_URL:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{config.VISION_API_URL}/models")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("id", "?") for m in data.get("data", [])[:3]]
+                    checks.append((f"[OK] Vision API ({', '.join(models)})", True))
+                else:
+                    checks.append(("[WARN] Vision API responded but no models", False))
+        except Exception:
+            checks.append(("[WARN] Vision API not reachable - LLM features disabled", False))
+    else:
+        checks.append(("[INFO] Vision API not configured - LLM features disabled", False))
+
+    # Docling
+    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    docling_label = "Docling GPU" if config.USE_DOCLING_GPU else "Docling CPU"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{docling_url}/health")
+            if resp.status_code == 200:
+                checks.append((f"[OK] {docling_label}", True))
+            else:
+                checks.append((f"[WARN] {docling_label} responded {resp.status_code}", False))
+    except Exception:
+        checks.append((f"[INFO] {docling_label} not reachable - using MarkItDown for documents", False))
+
+    # OpenSearch
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{config.OPENSEARCH_URL}/_cluster/health")
+            if resp.status_code == 200:
+                checks.append(("[OK] OpenSearch (Knowledge Base)", True))
+            else:
+                checks.append(("[WARN] OpenSearch responded but unhealthy", False))
+    except Exception:
+        checks.append(("[INFO] OpenSearch not reachable - knowledge base disabled", False))
+
+    # Docker Playwright
+    try:
+        from .docker_playwright import is_available
+        if await is_available():
+            checks.append(("[OK] Docker Playwright", True))
+        else:
+            checks.append(("[INFO] Docker Playwright not available", False))
+    except ImportError:
+        checks.append(("[INFO] Docker Playwright not installed", False))
+
+    # Preload folder
+    preload_dir = config.PRELOAD_DIR
+    if config.PRELOAD_ON_STARTUP and preload_dir.exists():
+        file_count = sum(1 for f in preload_dir.rglob("*") if f.is_file() and not f.name.startswith("."))
+        if file_count:
+            checks.append((f"[OK] Preload folder ({file_count} files)", True))
+        else:
+            checks.append(("[INFO] Preload folder empty", False))
+    else:
+        checks.append(("[INFO] No preload folder", False))
+
+    # Print summary
+    ok_count = sum(1 for _, ok in checks if ok)
+    total = len(checks)
+    print(f"\n{'=' * 50}")
+    print(f"MCP Gateway - Service Status ({ok_count}/{total} available)")
+    print(f"{'=' * 50}")
+    for msg, _ in checks:
+        print(f"  {msg}")
+    print(f"{'=' * 50}")
+
+    # Preload documents into KB (after health checks so we know what's available)
+    await preload_module.preload_documents()
+    print()
 
 
 def run_stdio():
@@ -281,6 +436,7 @@ def run_stdio():
 
 
 def run_sse(host: str = "0.0.0.0", port: int = 8000):
+    import asyncio
     import uvicorn
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
@@ -288,6 +444,9 @@ def run_sse(host: str = "0.0.0.0", port: int = 8000):
 
     async def health(request):
         return JSONResponse({"status": "ok"})
+
+    # Run startup health check
+    asyncio.get_event_loop().run_until_complete(startup_health_check())
 
     app = Starlette(routes=[
         Route("/health", health),
@@ -305,7 +464,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("-p", "--port", type=int, default=8000)
     args = parser.parse_args()
-    
+
     if args.transport == "stdio":
         run_stdio()
     else:
