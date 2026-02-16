@@ -3,6 +3,7 @@ Coding agent wrapper using Goose by Block.
 
 Spawns Goose in a Docker container with:
 - Task passed via CLI arguments
+- Extensions enabled via CLI flags (--with-builtin, --with-streamable-http-extension)
 - Workspace mounted as volume
 - Access to vLLM for LLM inference
 - Access to MCP Gateway for tools (search, fetch, KB)
@@ -10,7 +11,6 @@ Spawns Goose in a Docker container with:
 """
 
 import asyncio
-import json
 import time
 from pathlib import Path
 
@@ -27,35 +27,37 @@ except ImportError:
     _DOCKER_AVAILABLE = False
 
 
-def _build_goose_config() -> dict:
-    """Build Goose config.yaml content for Docker mount."""
-    cfg = {
-        "GOOSE_PROVIDER": "openai",
-        "GOOSE_MODEL": config.VISION_MODEL,
-        "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
-        "OPENAI_BASE_PATH": "/v1/chat/completions",
-        "OPENAI_API_KEY": config.VISION_API_KEY or "not-needed",
-        "extensions": {
-            "developer": {
-                "enabled": True,
-                "type": "builtin",
-            },
-        },
-    }
+def _goose_model() -> str:
+    """Resolve Goose model: GOOSE_MODEL if set, else VISION_MODEL."""
+    return config.GOOSE_MODEL or config.VISION_MODEL
 
-    # Add MCP gateway as an extension if URL is configured
+
+def _goose_api_key() -> str:
+    """Resolve Goose API key: GOOSE_API_KEY if set, else VISION_API_KEY."""
+    return config.GOOSE_API_KEY or config.VISION_API_KEY or "not-needed"
+
+
+def _build_command(task: str) -> list[str]:
+    """Build Goose CLI command with extensions as flags."""
+    cmd = [
+        "run",
+        "--with-builtin", "developer",
+        "--text", task,
+    ]
+
+    # Add MCP gateway as Streamable HTTP extension if configured.
+    # Goose runs with network_mode="host", so Docker DNS names (e.g. "gateway")
+    # won't resolve. Replace with localhost equivalent.
+    # Uses /mcp endpoint (Streamable HTTP transport, required by Goose).
     if config.GOOSE_MCP_GATEWAY_URL:
-        cfg["extensions"]["mcp_gateway"] = {
-            "name": "mcp-gateway",
-            "description": "Web search, content fetching, and knowledge base",
-            "enabled": True,
-            "type": "sse",
-            "uri": f"{config.GOOSE_MCP_GATEWAY_URL}/sse",
-            "timeout": 120,
-            "bundled": False,
-        }
+        gw_url = config.GOOSE_MCP_GATEWAY_URL
+        gw_url = gw_url.replace("://gateway:", "://localhost:")
+        cmd.extend([
+            "--with-streamable-http-extension",
+            f"{gw_url}/mcp",
+        ])
 
-    return cfg
+    return cmd
 
 
 def _get_client():
@@ -74,7 +76,6 @@ def _get_host_workspace_path() -> str | None:
         return None
     try:
         client = docker.from_env()
-        # Find our container by hostname (Docker sets hostname = container ID)
         import socket
         hostname = socket.gethostname()
         container = client.containers.get(hostname)
@@ -93,12 +94,10 @@ async def is_available() -> bool:
     try:
         client = await asyncio.to_thread(_get_client)
         await asyncio.to_thread(client.ping)
-        # Check if image exists locally
         try:
             await asyncio.to_thread(client.images.get, config.GOOSE_IMAGE)
             return True
         except Exception:
-            # Image not pulled yet — still "available" (Docker works, just needs pull)
             log.info("Goose image %s not found locally, will pull on first use", config.GOOSE_IMAGE)
             return True
     except Exception:
@@ -124,52 +123,36 @@ async def run_task(task: str, workspace: str | None = None) -> str:
     log.info("Running Goose task: %s (workspace: %s)", task[:100], workspace_path)
     start = time.monotonic()
 
-    # Write Goose config to a temp file inside the workspace directory.
-    # This is critical for Docker-in-Docker: the file must be on a path
-    # that's shared between the gateway container and the host filesystem.
-    goose_config = _build_goose_config()
-    config_file = workspace_path / ".goose_config.yaml"
-
     try:
         client = await asyncio.to_thread(_get_client)
-
-        # Write config inside workspace (shared volume between gateway and host)
-        config_file.write_text(json.dumps(goose_config))
 
         # Docker-in-Docker path resolution:
         # When running inside Docker, volume mounts for sibling containers must
         # use host paths, not container paths. Auto-detect by inspecting our mounts.
         host_workspace = _get_host_workspace_path()
         if host_workspace:
-            # Running in Docker: use host path for volume mounts
-            host_config = f"{host_workspace}/.goose_config.yaml"
             log.debug("Docker-in-Docker mode: host workspace = %s", host_workspace)
         else:
-            # Running locally: use resolved paths directly
             host_workspace = str(workspace_path.resolve())
-            host_config = str(config_file.resolve())
 
-        # Build container config
         volumes = {
             host_workspace: {"bind": "/workspace", "mode": "rw"},
-            host_config: {"bind": "/root/.config/goose/config.yaml", "mode": "ro"},
         }
 
-        # Goose needs network to reach vLLM and MCP gateway
-        # We'll use the host network for simplicity on Windows/Docker Desktop
+        # All config via env vars + CLI flags — no config file needed
         output = await asyncio.to_thread(
             client.containers.run,
             image=config.GOOSE_IMAGE,
-            command=["run", "--text", task],
+            command=_build_command(task),
             volumes=volumes,
             working_dir="/workspace",
             network_mode="host",
             environment={
                 "GOOSE_PROVIDER": "openai",
-                "GOOSE_MODEL": config.VISION_MODEL,
+                "GOOSE_MODEL": _goose_model(),
                 "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
                 "OPENAI_BASE_PATH": "/v1/chat/completions",
-                "OPENAI_API_KEY": config.VISION_API_KEY or "not-needed",
+                "OPENAI_API_KEY": _goose_api_key(),
             },
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit="2g",
@@ -207,10 +190,3 @@ async def run_task(task: str, workspace: str | None = None) -> str:
     except Exception as e:
         log.error("Unexpected Goose error: %s", e)
         return f"Error: {type(e).__name__}: {e}"
-
-    finally:
-        # Clean up config file from workspace
-        try:
-            config_file.unlink(missing_ok=True)
-        except Exception:
-            pass

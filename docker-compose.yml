@@ -65,6 +65,8 @@ services:
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
       - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
+      - GOOSE_MODEL=${GOOSE_MODEL:-}
+      - GOOSE_API_KEY=${GOOSE_API_KEY:-}
       - GOOSE_MCP_GATEWAY_URL=${GOOSE_MCP_GATEWAY_URL:-http://gateway:8000}
 
       # Chat UI

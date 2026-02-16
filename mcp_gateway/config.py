@@ -257,6 +257,8 @@ GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "ghcr.io/block/goose:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
 GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
 GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")
+GOOSE_MODEL = os.getenv("GOOSE_MODEL", "")  # Falls back to VISION_MODEL if empty
+GOOSE_API_KEY = os.getenv("GOOSE_API_KEY", "")  # Falls back to VISION_API_KEY if empty
 GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
 
 # =============================================================================

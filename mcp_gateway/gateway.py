@@ -549,10 +549,32 @@ def run_sse(host: str = "0.0.0.0", port: int = 8000):
     # Run startup health check
     asyncio.get_event_loop().run_until_complete(startup_health_check())
 
-    app = Starlette(routes=[
-        Route("/health", health),
-        Mount("/", app=mcp.sse_app()),
-    ])
+    # Serve both MCP transports:
+    # - SSE at /sse + /messages/ (for existing MCP clients like Claude Code)
+    # - Streamable HTTP at /mcp (for Goose and newer MCP clients)
+    import contextlib
+
+    sse_app_instance = mcp.sse_app()
+    streamable_app = mcp.streamable_http_app()
+
+    # Streamable HTTP needs its session manager started via lifespan
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with mcp.session_manager.run():
+            yield
+
+    # Combine routes from both transports into one Starlette app
+    sse_routes = list(sse_app_instance.routes)
+    streamable_routes = list(streamable_app.routes)
+
+    app = Starlette(
+        routes=[
+            Route("/health", health),
+            *streamable_routes,  # /mcp
+            *sse_routes,         # /sse, /messages/
+        ],
+        lifespan=lifespan,
+    )
 
     print(f"Starting MCP Gateway on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
