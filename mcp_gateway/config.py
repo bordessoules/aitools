@@ -48,7 +48,7 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
 # VISION API (for general vision tasks)
 # =============================================================================
 # OpenAI-compatible endpoint for vision models (Qwen3-VL, GPT-4V, etc.)
-# Used for: picture descriptions in documents, web screenshot extraction
+# Used for: picture descriptions in documents, web content tail-trimming
 # Can be: LM Studio, llama.cpp, vLLM, OpenAI, Together, any OpenAI-compatible API
 #
 # Examples:
@@ -228,3 +228,41 @@ GITHUB_PATTERNS = [
 # =============================================================================
 
 OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
+
+# =============================================================================
+# CODE EXECUTION SANDBOX
+# =============================================================================
+# Enables run_code() tool for executing Python/JavaScript in isolated containers.
+# Requires Docker socket access (gateway container must mount /var/run/docker.sock).
+# Sandboxes run with no network, memory/CPU limits, and auto-removal.
+
+ENABLE_CODE_EXECUTION = os.getenv("ENABLE_CODE_EXECUTION", "false").lower() == "true"
+
+CODE_SANDBOX_PYTHON_IMAGE = os.getenv("CODE_SANDBOX_PYTHON_IMAGE", "python:3.11-slim")
+CODE_SANDBOX_NODE_IMAGE = os.getenv("CODE_SANDBOX_NODE_IMAGE", "node:20-slim")
+CODE_SANDBOX_TIMEOUT = int(os.getenv("CODE_SANDBOX_TIMEOUT", "30"))
+CODE_SANDBOX_MEMORY_LIMIT = os.getenv("CODE_SANDBOX_MEMORY_LIMIT", "256m")
+CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
+
+# =============================================================================
+# CODING AGENT (Goose by Block)
+# =============================================================================
+# Enables run_coding_agent() tool that spawns Goose in a Docker container.
+# Goose connects to vLLM for LLM and to our MCP gateway for tools.
+# Requires Docker socket access (same as code execution).
+
+ENABLE_CODING_AGENT = os.getenv("ENABLE_CODING_AGENT", "false").lower() == "true"
+
+GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "ghcr.io/block/goose:latest")
+GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
+GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
+GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")
+GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
+
+# =============================================================================
+# CHAT UI
+# =============================================================================
+# HuggingFace Chat UI is a standalone Docker service, not an MCP tool.
+# Configuration is primarily in docker-compose.yml and .env.
+
+CHAT_UI_PORT = int(os.getenv("CHAT_UI_PORT", "3000"))

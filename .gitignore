@@ -45,6 +45,11 @@ node_modules/
 .pytest_cache/
 .coverage
 htmlcov/
+test_*.py
+test_*.md
+test_*.png
+bench*.py
+tier2_*.md
 
 # Docker volumes (if any)
 *.volume/
@@ -52,4 +57,14 @@ htmlcov/
 # Generated / temporary files
 nul
 docling_openapi.json
+docling_direct.md
+docling_output.json
 bench_logs/
+
+# Preload folder contents (user-specific, only .gitkeep tracked)
+preload/*
+!preload/.gitkeep
+
+# Workspace for coding agent (user-specific, only .gitkeep tracked)
+workspace/*
+!workspace/.gitkeep

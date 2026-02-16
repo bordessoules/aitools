@@ -11,6 +11,8 @@ Exposed tools:
 - kb_remove(url): Remove document from knowledge base
 - process(content, task, prompt): Process text with local LLM
 - cache(action, url): Manage document cache
+- run_code(language, code): Execute code in isolated sandbox [requires ENABLE_CODE_EXECUTION]
+- run_coding_agent(task): Run Goose coding agent [requires ENABLE_CODING_AGENT]
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
@@ -24,6 +26,8 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from . import config
+from . import code_sandbox
+from . import coding_agent
 from . import documents
 from . import fetch as fetch_module
 from . import knowledge_base as kb
@@ -68,7 +72,7 @@ async def fetch(url: str, force_refresh: bool = False) -> str:
     Handles content types automatically:
     - Web pages: Docling pipeline (escalating HTML sources) → tail-trim
     - PDFs/DOCs: Docling → MarkItDown fallback
-    - Images: Described via Vision AI (Qwen VL)
+    - Images: Described via vision AI
     - GitHub repos: README extracted
 
     SMART SIZE HANDLING:
@@ -238,12 +242,14 @@ async def kb_search(query: str) -> str:
     Search your knowledge base for previously saved documents.
     
     FAST and FREE - always call this FIRST before web search!
-    This searches through all documents added with add_to_knowledge_base().
-    
+    This searches through all documents added with add_to_knowledge_base()
+    and any files preloaded from the preload folder.
+
     Use this when:
     - Starting any research task (check what you already know)
     - The user refers to previous discussions or documents
     - You need information that was saved earlier
+    - Looking for content from preloaded company docs or reference material
     
     Only use web search (search()) if kb_search returns no relevant results,
     or if you need the latest/current information.
@@ -339,6 +345,66 @@ async def cache(action: str = "stats", url: str = "") -> str:
     return documents.cache_action(action, url)
 
 
+@mcp.tool()
+async def run_code(language: str, code: str) -> str:
+    """
+    Execute code in a secure, isolated Docker sandbox.
+
+    Runs code in a fresh container with NO network access, memory/CPU limits,
+    and automatic cleanup. Use this for:
+    - Running Python or JavaScript code snippets
+    - Testing algorithms or data processing
+    - Verifying calculations or transformations
+
+    Supported languages: "python" (or "py"), "javascript" (or "js", "node")
+
+    Security: Each execution runs in a fresh container with:
+    - No network access (completely isolated)
+    - 256MB memory limit (configurable)
+    - 30-second timeout (configurable)
+    - Container auto-removed after execution
+
+    Args:
+        language: Programming language ("python" or "javascript")
+        code: Source code to execute
+
+    Returns:
+        Execution output (stdout + stderr) with timing info
+    """
+    if not config.ENABLE_CODE_EXECUTION:
+        return "Error: Code execution is disabled. Set ENABLE_CODE_EXECUTION=true in .env"
+    return await code_sandbox.run_code(language, code)
+
+
+@mcp.tool()
+async def run_coding_agent(task: str, workspace: str | None = None) -> str:
+    """
+    Run an autonomous coding agent (Goose) to complete a programming task.
+
+    Spawns a Goose coding agent in a Docker container that can:
+    - Write and modify code files in the workspace
+    - Execute shell commands
+    - Use MCP gateway tools (search, fetch, knowledge base)
+
+    Best for multi-step coding tasks:
+    - "Fix the authentication bug in auth.py"
+    - "Create a REST API for user management"
+    - "Refactor this module to use async/await"
+
+    NOTE: Requires a capable LLM (7B+ recommended for reliable results).
+
+    Args:
+        task: Natural language description of the coding task
+        workspace: Optional workspace directory path (default: ./workspace)
+
+    Returns:
+        Agent output with task results
+    """
+    if not config.ENABLE_CODING_AGENT:
+        return "Error: Coding agent is disabled. Set ENABLE_CODING_AGENT=true in .env"
+    return await coding_agent.run_task(task, workspace)
+
+
 async def startup_health_check():
     """Check which services are available on startup and log status."""
 
@@ -415,6 +481,41 @@ async def startup_health_check():
             checks.append(("[INFO] Preload folder empty", False))
     else:
         checks.append(("[INFO] No preload folder", False))
+
+    # Code Execution Sandbox
+    if config.ENABLE_CODE_EXECUTION:
+        try:
+            if await code_sandbox.is_available():
+                checks.append(("[OK] Code Sandbox (Docker)", True))
+            else:
+                checks.append(("[WARN] Code Sandbox: Docker not accessible", False))
+        except Exception:
+            checks.append(("[WARN] Code Sandbox: docker package not installed", False))
+    else:
+        checks.append(("[INFO] Code Sandbox disabled", False))
+
+    # Coding Agent (Goose)
+    if config.ENABLE_CODING_AGENT:
+        try:
+            if await coding_agent.is_available():
+                checks.append(("[OK] Coding Agent (Goose)", True))
+            else:
+                checks.append(("[WARN] Coding Agent: Docker not accessible", False))
+        except Exception:
+            checks.append(("[WARN] Coding Agent: docker package not installed", False))
+    else:
+        checks.append(("[INFO] Coding Agent disabled", False))
+
+    # Chat UI (external service)
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"http://localhost:{config.CHAT_UI_PORT}")
+            if resp.status_code == 200:
+                checks.append(("[OK] Chat UI", True))
+            else:
+                checks.append(("[INFO] Chat UI not reachable", False))
+    except Exception:
+        checks.append(("[INFO] Chat UI not running", False))
 
     # Print summary
     ok_count = sum(1 for _, ok in checks if ok)

@@ -50,10 +50,33 @@ services:
       - PLAYWRIGHT_DOCKER_HEADED=${PLAYWRIGHT_DOCKER_HEADED:-true}
       - CACHE_DIR=/app/cache
       - PRELOAD_DIR=/app/preload
+
+      # Code Execution Sandbox
+      - ENABLE_CODE_EXECUTION=${ENABLE_CODE_EXECUTION:-false}
+      - CODE_SANDBOX_PYTHON_IMAGE=${CODE_SANDBOX_PYTHON_IMAGE:-python:3.11-slim}
+      - CODE_SANDBOX_NODE_IMAGE=${CODE_SANDBOX_NODE_IMAGE:-node:20-slim}
+      - CODE_SANDBOX_TIMEOUT=${CODE_SANDBOX_TIMEOUT:-30}
+      - CODE_SANDBOX_MEMORY_LIMIT=${CODE_SANDBOX_MEMORY_LIMIT:-256m}
+      - CODE_SANDBOX_CPU_LIMIT=${CODE_SANDBOX_CPU_LIMIT:-1.0}
+
+      # Coding Agent (Goose)
+      - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
+      - GOOSE_IMAGE=${GOOSE_IMAGE:-ghcr.io/block/goose:latest}
+      - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
+      - GOOSE_WORKSPACE=/app/workspace
+      - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
+      - GOOSE_MCP_GATEWAY_URL=${GOOSE_MCP_GATEWAY_URL:-http://gateway:8000}
+
+      # Chat UI
+      - CHAT_UI_PORT=${CHAT_UI_PORT:-3000}
     volumes:
       - ./cache:/app/cache
       - ./preload:/app/preload:ro
       - ./.env:/app/.env:ro
+      # Docker socket for code sandbox and coding agent (required when enabled)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Workspace for coding agent
+      - ./workspace:/app/workspace
     depends_on:
       searxng:
         condition: service_healthy
@@ -209,6 +232,44 @@ services:
       - mcp-network
     restart: unless-stopped
 
+  # ============================================================================
+  # CHAT UI - HuggingFace Chat Interface (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  # Web-based chat UI connected to vLLM. Includes bundled MongoDB for persistence.
+  # Access at http://localhost:3000
+  #
+  # NOTE: MCP tool calling requires the LLM to support OpenAI function calling
+  # format natively. Smaller vision models may not reliably generate tool calls.
+  # To enable MCP tools, uncomment the MCP_SERVERS line below.
+  chat-ui:
+    image: ghcr.io/huggingface/chat-ui-db:latest
+    container_name: mcp-chat-ui
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    ports:
+      - "${CHAT_UI_PORT:-3000}:3000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Model configuration - points to your vLLM instance
+      - MODELS=${CHAT_UI_MODELS:-}
+      # MCP tools (optional - uncomment to enable, requires model with function calling)
+      # - MCP_SERVERS=[{"name":"mcp-gateway","url":"http://gateway:8000/sse"}]
+    volumes:
+      - chat-ui-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
 networks:
   mcp-network:
     driver: bridge
@@ -217,3 +278,4 @@ volumes:
   searxng-data:
   opensearch-data:
   docling-hf-cache:
+  chat-ui-data:

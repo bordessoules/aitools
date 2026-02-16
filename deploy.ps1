@@ -374,7 +374,20 @@ function Invoke-Deployment($profile) {
     # Pull images first
     Write-Host "`nPulling Docker images..." -ForegroundColor Yellow
     docker compose --profile $profile pull
-    
+
+    # Pre-pull sandbox images if code execution is enabled
+    if ($env:ENABLE_CODE_EXECUTION -eq "true") {
+        Write-Host "`nPulling code sandbox images..." -ForegroundColor Yellow
+        docker pull ($env:CODE_SANDBOX_PYTHON_IMAGE ?? "python:3.11-slim")
+        docker pull ($env:CODE_SANDBOX_NODE_IMAGE ?? "node:20-slim")
+    }
+
+    # Pre-pull Goose image if coding agent is enabled
+    if ($env:ENABLE_CODING_AGENT -eq "true") {
+        Write-Host "`nPulling Goose coding agent image..." -ForegroundColor Yellow
+        docker pull ($env:GOOSE_IMAGE ?? "ghcr.io/block/goose:latest")
+    }
+
     # Start services
     Write-Host "`nStarting services..." -ForegroundColor Yellow
     docker compose --profile $profile up -d
@@ -401,6 +414,7 @@ function Invoke-Deployment($profile) {
     if ($profile -in @("standard", "cpu", "gpu")) {
         Write-Host "  OpenSearch: http://localhost:9200" -ForegroundColor Cyan
         Write-Host "  Dashboards: http://localhost:5601" -ForegroundColor Cyan
+        Write-Host "  Chat UI:    http://localhost:3000" -ForegroundColor Cyan
     }
     
     Write-Host "`nUseful commands:" -ForegroundColor Gray

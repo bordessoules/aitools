@@ -20,7 +20,7 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN uv pip install --system -r requirements.txt && \
-    uv pip install --system "markitdown[all]" openai mcp httpx playwright
+    uv pip install --system "markitdown[all]" openai mcp httpx playwright docker
 
 # Install Chromium for web extraction (Docker Playwright)
 RUN playwright install chromium --with-deps
@@ -29,7 +29,7 @@ RUN playwright install chromium --with-deps
 COPY mcp_gateway/ ./mcp_gateway/
 
 # Create cache, auth, and preload directories
-RUN mkdir -p cache auth preload
+RUN mkdir -p cache auth preload workspace
 
 # Default: headed mode with Xvfb (better bot resistance than headless)
 ENV PLAYWRIGHT_DOCKER_HEADED=true

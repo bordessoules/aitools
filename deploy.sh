@@ -406,7 +406,19 @@ deploy() {
     echo ""
     step "Pull" "Pulling Docker images..."
     docker compose --profile "$profile" pull
-    
+
+    # Pre-pull sandbox images if enabled
+    if [[ "${ENABLE_CODE_EXECUTION:-false}" == "true" ]]; then
+        step "Pull" "Pulling code sandbox images..."
+        docker pull "${CODE_SANDBOX_PYTHON_IMAGE:-python:3.11-slim}"
+        docker pull "${CODE_SANDBOX_NODE_IMAGE:-node:20-slim}"
+    fi
+
+    if [[ "${ENABLE_CODING_AGENT:-false}" == "true" ]]; then
+        step "Pull" "Pulling Goose coding agent image..."
+        docker pull "${GOOSE_IMAGE:-ghcr.io/block/goose:latest}"
+    fi
+
     # Start services
     echo ""
     step "Start" "Starting services..."
@@ -431,6 +443,7 @@ deploy() {
     if [[ "$profile" != "minimal" ]]; then
         echo -e "  ${CYAN}OpenSearch: http://localhost:9200${NC}"
         echo -e "  ${CYAN}Dashboards: http://localhost:5601${NC}"
+        echo -e "  ${CYAN}Chat UI:    http://localhost:3000${NC}"
     fi
     
     echo ""
