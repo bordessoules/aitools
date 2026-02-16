@@ -254,10 +254,12 @@ services:
       - "${CHAT_UI_PORT:-3000}:3000"
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
-      # Model configuration - points to your vLLM instance
-      - MODELS=${CHAT_UI_MODELS:-}
-      # MCP tools (optional - uncomment to enable, requires model with function calling)
-      # - MCP_SERVERS=[{"name":"mcp-gateway","url":"http://gateway:8000/sse"}]
+      # OpenAI-compatible endpoint — Chat UI auto-discovers models from /models
+      - OPENAI_BASE_URL=${CHAT_UI_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENAI_API_KEY=${CHAT_UI_API_KEY:-}
+      # MCP tools — Chat UI requires HTTPS URLs; use tailscale serve --bg 8000
+      # to expose the gateway, then set CHAT_UI_MCP_SERVERS in .env
+      - MCP_SERVERS=${CHAT_UI_MCP_SERVERS:-}
     volumes:
       - chat-ui-data:/data
     extra_hosts:
