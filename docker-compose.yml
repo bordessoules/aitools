@@ -260,6 +260,8 @@ services:
       # MCP tools — Chat UI requires HTTPS URLs; use tailscale serve --bg 8000
       # to expose the gateway, then set CHAT_UI_MCP_SERVERS in .env
       - MCP_SERVERS=${CHAT_UI_MCP_SERVERS:-}
+      # MCP tool call timeout — Goose coding agent can take 2-7 min; default 120s is too short
+      - MCP_TOOL_TIMEOUT_MS=${MCP_TOOL_TIMEOUT_MS:-600000}
     volumes:
       - chat-ui-data:/data
     extra_hosts:
