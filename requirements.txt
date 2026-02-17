@@ -4,3 +4,6 @@ python-dotenv>=1.0.0
 uvicorn>=0.30.0
 starlette>=0.27.0
 docker>=7.0.0
+markitdown[all]
+openai>=1.0.0
+playwright>=1.40.0

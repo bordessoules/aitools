@@ -652,7 +652,18 @@ async def _extract_with_markitdown(url: str) -> str | None:
 
 
 async def describe_image(url: str, prompt: str = "Describe this image in detail.") -> str:
-    """Describe image using Vision AI."""
+    """Describe an image using the Vision API (VISION_API_URL).
+
+    Downloads the image, base64-encodes it, and sends it to the configured
+    vision model for description. Requires VISION_API_URL to be set.
+
+    Args:
+        url: Direct URL to the image file
+        prompt: Custom prompt for the vision model
+
+    Returns:
+        Text description of the image, or error message
+    """
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_BROWSER, follow_redirects=True) as client:
             resp = await client.get(url, headers={

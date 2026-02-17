@@ -245,6 +245,14 @@ CODE_SANDBOX_MEMORY_LIMIT = os.getenv("CODE_SANDBOX_MEMORY_LIMIT", "256m")
 CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
 
 # =============================================================================
+# PROCESSOR (LLM content processing)
+# =============================================================================
+# Limits for the process() tool that post-processes fetched content.
+
+PROCESSOR_MAX_CONTENT_CHARS = int(os.getenv("PROCESSOR_MAX_CONTENT_CHARS", "50000"))
+PROCESSOR_MAX_TOKENS = int(os.getenv("PROCESSOR_MAX_TOKENS", "8000"))
+
+# =============================================================================
 # CODING AGENT (Goose by Block)
 # =============================================================================
 # Enables run_coding_agent() tool that spawns Goose in a Docker container.
@@ -260,6 +268,7 @@ GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1"
 GOOSE_MODEL = os.getenv("GOOSE_MODEL", "")  # Falls back to VISION_MODEL if empty
 GOOSE_API_KEY = os.getenv("GOOSE_API_KEY", "")  # Falls back to VISION_API_KEY if empty
 GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
+GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 
 # =============================================================================
 # CHAT UI

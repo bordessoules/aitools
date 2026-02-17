@@ -273,7 +273,7 @@ async def list_documents(max_results: int = 20) -> str:
             total = data.get("hits", {}).get("total", {}).get("value", 0)
             
             if not hits:
-                return "Knowledge base is empty. Use fetch(url, add_to_kb=True) to add documents."
+                return "Knowledge base is empty. Use add_to_knowledge_base(url) to add documents."
             
             lines = [f"Knowledge base: {total} documents\n"]
             

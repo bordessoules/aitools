@@ -9,11 +9,13 @@ dependencies = [
     "uvicorn>=0.30.0",
     "python-dotenv>=1.0.0",
     "starlette>=0.27.0",
+    "docker>=7.0.0",
+    "openai>=1.0.0",
+    "markitdown[all]",
+    "playwright>=1.40.0",
 ]
 
 [project.optional-dependencies]
-markitdown = ["markitdown[all]", "openai"]
-playwright = ["playwright>=1.40.0"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
 
 [project.scripts]

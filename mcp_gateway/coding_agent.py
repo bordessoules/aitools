@@ -34,7 +34,8 @@ def _goose_model() -> str:
 
 def _goose_api_key() -> str:
     """Resolve Goose API key: GOOSE_API_KEY if set, else VISION_API_KEY."""
-    return config.GOOSE_API_KEY or config.VISION_API_KEY or "not-needed"
+    from .llm import API_KEY_PLACEHOLDER
+    return config.GOOSE_API_KEY or config.VISION_API_KEY or API_KEY_PLACEHOLDER
 
 
 def _build_command(task: str) -> list[str]:
@@ -155,7 +156,7 @@ async def run_task(task: str, workspace: str | None = None) -> str:
                 "OPENAI_API_KEY": _goose_api_key(),
             },
             extra_hosts={"host.docker.internal": "host-gateway"},
-            mem_limit="2g",
+            mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=True,
             stdout=True,
             stderr=True,

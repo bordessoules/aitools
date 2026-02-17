@@ -37,8 +37,8 @@ TASK_PROMPTS = {
     ),
 }
 
-# Maximum content length to process (50KB)
-MAX_CONTENT_CHARS = 50000
+# Maximum content length to process (configurable via PROCESSOR_MAX_CONTENT_CHARS)
+MAX_CONTENT_CHARS = config.PROCESSOR_MAX_CONTENT_CHARS
 
 
 async def process(
@@ -85,7 +85,7 @@ async def process(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        max_tokens=8000,
+        max_tokens=config.PROCESSOR_MAX_TOKENS,
     )
 
     if not result:

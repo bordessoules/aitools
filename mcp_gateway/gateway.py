@@ -267,7 +267,11 @@ async def kb_search(query: str) -> str:
 async def kb_list() -> str:
     """
     List all documents in the knowledge base.
-    
+
+    Returns a summary of each document including its title, URL,
+    source type (webpage, pdf, github, etc.), and when it was added.
+    Documents are sorted by most recently added first.
+
     Returns:
         List of documents with titles, URLs, and source types
     """
