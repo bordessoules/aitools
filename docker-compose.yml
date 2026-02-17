@@ -61,7 +61,7 @@ services:
 
       # Coding Agent (Goose)
       - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
-      - GOOSE_IMAGE=${GOOSE_IMAGE:-ghcr.io/block/goose:latest}
+      - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
       - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
@@ -275,6 +275,25 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 3
+
+  # ============================================================================
+  # GOOSE IMAGE BUILD (optional, builds custom Goose image with Python/Node)
+  # ============================================================================
+  # The base Goose image has no language runtimes (no Python, no Node).
+  # This builds a custom image that adds Python 3, Node.js, git, and curl
+  # so Goose can actually run the code it writes.
+  #
+  # Build once: docker compose build goose-image
+  # The gateway uses GOOSE_IMAGE=mcp-goose:latest by default.
+  goose-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.goose
+    image: mcp-goose:latest
+    container_name: mcp-goose-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
 
 networks:
   mcp-network:
