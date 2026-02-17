@@ -12,7 +12,8 @@ Exposed tools:
 - process(content, task, prompt): Process text with local LLM
 - cache(action, url): Manage document cache
 - run_code(language, code): Execute code in isolated sandbox [requires ENABLE_CODE_EXECUTION]
-- run_coding_agent(task): Run Goose coding agent [requires ENABLE_CODING_AGENT]
+- run_coding_agent(task, project): Run Goose coding agent [requires ENABLE_CODING_AGENT]
+- list_projects(): List persistent coding projects [requires ENABLE_CODING_AGENT]
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
@@ -28,6 +29,7 @@ from mcp.server.fastmcp import FastMCP
 from . import config
 from . import code_sandbox
 from . import coding_agent
+from . import gitea
 from . import documents
 from . import fetch as fetch_module
 from . import knowledge_base as kb
@@ -381,7 +383,7 @@ async def run_code(language: str, code: str) -> str:
 
 
 @mcp.tool()
-async def run_coding_agent(task: str, workspace: str | None = None) -> str:
+async def run_coding_agent(task: str, workspace: str | None = None, project: str | None = None) -> str:
     """
     Run an autonomous coding agent (Goose) to complete a programming task.
 
@@ -400,13 +402,52 @@ async def run_coding_agent(task: str, workspace: str | None = None) -> str:
     Args:
         task: Natural language description of the coding task
         workspace: Optional workspace directory path (default: ./workspace)
+        project: Optional project name for persistent work. When set, the workspace
+                 is backed by a Gitea git repo. Changes are auto-committed and pushed.
+                 Use the same project name across sessions to resume work.
+                 Valid characters: letters, numbers, hyphens, underscores.
 
     Returns:
         Agent output with task results
     """
     if not config.ENABLE_CODING_AGENT:
         return "Error: Coding agent is disabled. Set ENABLE_CODING_AGENT=true in .env"
-    return await coding_agent.run_task(task, workspace)
+    return await coding_agent.run_task(task, workspace, project=project)
+
+
+@mcp.tool()
+async def list_projects() -> str:
+    """
+    List persistent coding projects stored in Gitea.
+
+    Shows all projects created via run_coding_agent(project="name").
+    Each project is a git repository with full version history.
+    Browse code and commits at the Gitea web UI.
+
+    Returns:
+        List of projects with names, descriptions, last updated, and web URLs
+    """
+    if not config.ENABLE_CODING_AGENT:
+        return "Error: Coding agent is disabled. Set ENABLE_CODING_AGENT=true in .env"
+
+    if not await gitea.is_available():
+        return "Error: Gitea is not available. Projects require Gitea to be running."
+
+    repos = await gitea.list_repos()
+    if not repos:
+        return "No projects found. Create one with: run_coding_agent(task='...', project='my-project')"
+
+    lines = [f"Found {len(repos)} project(s):\n"]
+    for r in repos:
+        name = r["name"]
+        desc = r.get("description", "")
+        updated = r.get("updated_at", "")[:10]  # Just the date
+        url = r.get("html_url", "")
+        lines.append(f"  - {name}")
+        if desc:
+            lines.append(f"    {desc}")
+        lines.append(f"    Updated: {updated} | Browse: {url}")
+    return "\n".join(lines)
 
 
 async def startup_health_check():
@@ -509,6 +550,20 @@ async def startup_health_check():
             checks.append(("[WARN] Coding Agent: docker package not installed", False))
     else:
         checks.append(("[INFO] Coding Agent disabled", False))
+
+    # Gitea (Git Server for persistent projects)
+    if config.ENABLE_CODING_AGENT:
+        try:
+            if await gitea.is_available():
+                ok = await gitea.ensure_setup()
+                if ok:
+                    checks.append(("[OK] Gitea (Git Server)", True))
+                else:
+                    checks.append(("[WARN] Gitea reachable but setup failed", False))
+            else:
+                checks.append(("[INFO] Gitea not reachable - project persistence disabled", False))
+        except Exception:
+            checks.append(("[INFO] Gitea not available", False))
 
     # Chat UI (external service)
     try:

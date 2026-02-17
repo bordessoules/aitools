@@ -8,9 +8,12 @@ Spawns Goose in a Docker container with:
 - Access to vLLM for LLM inference
 - Access to MCP Gateway for tools (search, fetch, KB)
 - Configurable timeout
+- Optional project mode: Gitea-backed repos for persistent work
 """
 
 import asyncio
+import os
+import re
 import time
 from pathlib import Path
 
@@ -105,12 +108,113 @@ async def is_available() -> bool:
         return False
 
 
-async def run_task(task: str, workspace: str | None = None) -> str:
+# ---------------------------------------------------------------------------
+# Git helpers for project mode
+# ---------------------------------------------------------------------------
+
+def _validate_project_name(name: str) -> str | None:
+    """Validate project name. Returns error message or None if valid."""
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$', name):
+        return (
+            f"Invalid project name '{name}'. "
+            "Use letters, numbers, hyphens, underscores. Must start with alphanumeric."
+        )
+    if len(name) > 64:
+        return f"Project name too long ({len(name)} chars, max 64)."
+    return None
+
+
+async def _run_git_container(client, host_workspace: str, script: str) -> str:
+    """Run a short-lived container with git for pre/post task operations.
+
+    Overrides entrypoint because the Goose image's default entrypoint is
+    the goose binary, not a shell.
+    """
+    output = await asyncio.to_thread(
+        client.containers.run,
+        image=config.GOOSE_IMAGE,
+        entrypoint=["/bin/bash", "-c"],
+        command=[script],
+        volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
+        working_dir="/workspace",
+        network_mode="host",
+        extra_hosts={"host.docker.internal": "host-gateway"},
+        remove=True,
+        stdout=True,
+        stderr=True,
+        detach=False,
+    )
+    return output.decode("utf-8", errors="replace").strip()
+
+
+async def _git_pre_task(client, clone_url: str, host_workspace: str, workspace_path: Path, project: str):
+    """Clone or pull the project repo before running Goose."""
+    git_dir = workspace_path / ".git"
+
+    # Git safe.directory needed because workspace owner differs from container user
+    safe_dir = "git config --global --add safe.directory /workspace && "
+
+    if git_dir.exists():
+        log.info("Pulling latest for project '%s'", project)
+        script = safe_dir + "cd /workspace && git pull origin main 2>&1 || true"
+    else:
+        log.info("Cloning project '%s'", project)
+        # Clone into temp dir, then move .git into workspace (dir already exists from mkdir)
+        script = (
+            f"git clone {clone_url} /tmp/_repo 2>&1 && "
+            "cp -a /tmp/_repo/.git /workspace/.git && "
+            + safe_dir
+            + "cd /workspace && git checkout -- . 2>/dev/null || true"
+        )
+
+    try:
+        await _run_git_container(client, host_workspace, script)
+    except Exception as e:
+        log.warning("Git pre-task failed for '%s': %s", project, e)
+
+
+async def _git_post_task(client, host_workspace: str, task: str) -> str:
+    """Commit and push changes after Goose completes."""
+    # Sanitize task for commit message
+    safe_task = task[:200].replace('"', "'").replace("\\", "\\\\").replace("$", "")
+    commit_msg = f"goose: {safe_task}"
+
+    script = (
+        'git config --global --add safe.directory /workspace && '
+        'cd /workspace && '
+        'git config user.name "Goose Agent" && '
+        'git config user.email "goose@mcp-gateway" && '
+        'git add -A && '
+        'if git diff --cached --quiet; then '
+        '  echo "NO_CHANGES"; '
+        'else '
+        f'  git commit -m "{commit_msg}" && '
+        '  git push origin main 2>&1 && '
+        '  echo "COMMITTED"; '
+        'fi'
+    )
+
+    try:
+        result = await _run_git_container(client, host_workspace, script)
+        if "COMMITTED" in result:
+            return "[Changes committed and pushed to Gitea]"
+        return "[No changes to commit]"
+    except Exception as e:
+        log.warning("Git post-task failed: %s", e)
+        return f"[Warning: git commit/push failed: {e}]"
+
+
+# ---------------------------------------------------------------------------
+# Main task runner
+# ---------------------------------------------------------------------------
+
+async def run_task(task: str, workspace: str | None = None, project: str | None = None) -> str:
     """Run a coding task using Goose agent in a Docker container.
 
     Args:
         task: Natural language description of the coding task
         workspace: Optional workspace directory path (defaults to config.GOOSE_WORKSPACE)
+        project: Optional project name for Gitea-backed persistent projects
 
     Returns:
         Goose output with task results, or error message
@@ -119,9 +223,30 @@ async def run_task(task: str, workspace: str | None = None) -> str:
         return "Error: docker Python package not installed. Run: pip install docker"
 
     workspace_path = Path(workspace) if workspace else config.GOOSE_WORKSPACE
-    workspace_path.mkdir(parents=True, exist_ok=True)
 
-    log.info("Running Goose task: %s (workspace: %s)", task[:100], workspace_path)
+    # Project mode: validate name, set up Gitea repo, use subdirectory
+    clone_url = None
+    if project:
+        err = _validate_project_name(project)
+        if err:
+            return f"Error: {err}"
+
+        workspace_path = config.GOOSE_WORKSPACE / project
+
+        try:
+            from . import gitea
+            clone_url = await gitea.ensure_repo(project)
+            if not clone_url:
+                return f"Error: Could not create/access Gitea repo for project '{project}'. Is Gitea running?"
+        except Exception as e:
+            log.error("Gitea repo setup failed for '%s': %s", project, e)
+            return f"Error setting up project repo: {e}"
+
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    # Make workspace writable by Goose (runs as UID 1000 'goose' user)
+    os.chmod(workspace_path, 0o777)
+
+    log.info("Running Goose task: %s (workspace: %s, project: %s)", task[:100], workspace_path, project)
     start = time.monotonic()
 
     try:
@@ -133,12 +258,18 @@ async def run_task(task: str, workspace: str | None = None) -> str:
         host_workspace = _get_host_workspace_path()
         if host_workspace:
             log.debug("Docker-in-Docker mode: host workspace = %s", host_workspace)
+            if project:
+                host_workspace = f"{host_workspace}/{project}"
         else:
             host_workspace = str(workspace_path.resolve())
 
         volumes = {
             host_workspace: {"bind": "/workspace", "mode": "rw"},
         }
+
+        # Pre-task: clone or pull if project mode
+        if project and clone_url:
+            await _git_pre_task(client, clone_url, host_workspace, workspace_path, project)
 
         # All config via env vars + CLI flags — no config file needed
         output = await asyncio.to_thread(
@@ -169,8 +300,15 @@ async def run_task(task: str, workspace: str | None = None) -> str:
         if len(result) > 100_000:
             result = result[:100_000] + "\n\n... (output truncated at 100,000 chars)"
 
+        # Post-task: commit and push if project mode
+        git_info = ""
+        if project and clone_url:
+            git_info = "\n" + await _git_post_task(client, host_workspace, task)
+
         log.info("Goose task completed in %.1fs (%d chars output)", elapsed, len(result))
-        return f"{result}\n\n[Goose completed in {elapsed:.0f}s | workspace: {workspace_path}]"
+
+        project_info = f" | project: {project}" if project else ""
+        return f"{result}\n\n[Goose completed in {elapsed:.0f}s | workspace: {workspace_path}{project_info}]{git_info}"
 
     except ContainerError as e:
         elapsed = time.monotonic() - start

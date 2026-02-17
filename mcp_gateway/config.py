@@ -271,6 +271,20 @@ GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000"
 GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 
 # =============================================================================
+# GITEA GIT SERVER
+# =============================================================================
+# Self-hosted Git server for persistent coding projects.
+# When project= is passed to run_coding_agent(), the workspace is backed by
+# a Gitea repository. Gitea runs inside Docker; Goose (network_mode=host)
+# accesses it via localhost.
+
+GITEA_URL = os.getenv("GITEA_URL", "http://gitea:3000")  # Internal Docker URL
+GITEA_HOST_PORT = int(os.getenv("GITEA_HOST_PORT", "3001"))  # Exposed on host
+GITEA_ADMIN_USER = os.getenv("GITEA_ADMIN_USER", "goose")
+GITEA_ADMIN_PASSWORD = os.getenv("GITEA_ADMIN_PASSWORD", "goose-gitea-local")
+GITEA_ADMIN_EMAIL = os.getenv("GITEA_ADMIN_EMAIL", "goose@localhost")
+
+# =============================================================================
 # CHAT UI
 # =============================================================================
 # HuggingFace Chat UI is a standalone Docker service, not an MCP tool.
