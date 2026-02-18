@@ -294,14 +294,22 @@ async def list_repos() -> list[dict]:
         if resp.status_code != 200:
             return []
 
-        # Rewrite html_url to use localhost port (for the user's browser)
+        # Rewrite html_url for the user's browser.
+        # Gitea returns URLs based on ROOT_URL (e.g. http://localhost:3001).
+        # If GITEA_PUBLIC_URL is set (e.g. Tailscale HTTPS), rewrite to that.
+        localhost_base = f"http://localhost:{config.GITEA_HOST_PORT}"
+        public_base = (
+            config.GITEA_PUBLIC_URL.rstrip("/")
+            if config.GITEA_PUBLIC_URL
+            else localhost_base
+        )
         return [
             {
                 "name": r["name"],
                 "description": r.get("description", ""),
                 "updated_at": r.get("updated_at", ""),
                 "html_url": r.get("html_url", "").replace(
-                    _base_url(), f"http://localhost:{config.GITEA_HOST_PORT}"
+                    localhost_base, public_base
                 ),
             }
             for r in resp.json()
