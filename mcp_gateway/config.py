@@ -224,6 +224,17 @@ GITHUB_PATTERNS = [
 ]
 
 # =============================================================================
+# PLUGIN ENABLE FLAGS
+# =============================================================================
+# Control which tool groups are loaded. Disabled plugins don't register tools.
+
+ENABLE_WEB_TOOLS = os.getenv("ENABLE_WEB_TOOLS", "true").lower() == "true"
+ENABLE_KB_TOOLS = os.getenv("ENABLE_KB_TOOLS", "true").lower() == "true"
+ENABLE_PROCESSING_TOOLS = os.getenv("ENABLE_PROCESSING_TOOLS", "true").lower() == "true"
+ENABLE_CODE_EXECUTION = os.getenv("ENABLE_CODE_EXECUTION", "false").lower() == "true"
+ENABLE_CODING_AGENT = os.getenv("ENABLE_CODING_AGENT", "false").lower() == "true"
+
+# =============================================================================
 # KNOWLEDGE BASE
 # =============================================================================
 
@@ -232,11 +243,9 @@ OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
 # =============================================================================
 # CODE EXECUTION SANDBOX
 # =============================================================================
-# Enables run_code() tool for executing Python/JavaScript in isolated containers.
+# run_code() tool — execute Python/JavaScript in isolated Docker containers.
 # Requires Docker socket access (gateway container must mount /var/run/docker.sock).
 # Sandboxes run with no network, memory/CPU limits, and auto-removal.
-
-ENABLE_CODE_EXECUTION = os.getenv("ENABLE_CODE_EXECUTION", "false").lower() == "true"
 
 CODE_SANDBOX_PYTHON_IMAGE = os.getenv("CODE_SANDBOX_PYTHON_IMAGE", "python:3.11-slim")
 CODE_SANDBOX_NODE_IMAGE = os.getenv("CODE_SANDBOX_NODE_IMAGE", "node:20-slim")
@@ -253,15 +262,18 @@ PROCESSOR_MAX_CONTENT_CHARS = int(os.getenv("PROCESSOR_MAX_CONTENT_CHARS", "5000
 PROCESSOR_MAX_TOKENS = int(os.getenv("PROCESSOR_MAX_TOKENS", "8000"))
 
 # =============================================================================
-# CODING AGENT (Goose by Block)
+# CODING AGENT (pluggable: goose, aider)
 # =============================================================================
-# Enables run_coding_agent() tool that spawns Goose in a Docker container.
-# Goose connects to vLLM for LLM and to our MCP gateway for tools.
+# run_coding_agent() tool — spawns a coding agent in Docker.
+# Agent connects to vLLM for LLM and to our MCP gateway for tools.
 # Requires Docker socket access (same as code execution).
+# Switch agent via CODING_AGENT env var.
 
-ENABLE_CODING_AGENT = os.getenv("ENABLE_CODING_AGENT", "false").lower() == "true"
+CODING_AGENT = os.getenv("CODING_AGENT", "goose")
 
-GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "ghcr.io/block/goose:latest")
+# Per-agent Docker images (only the selected agent's image is used)
+GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "mcp-goose:latest")
+AIDER_IMAGE = os.getenv("AIDER_IMAGE", "paulgauthier/aider:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
 GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
 GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")
@@ -280,6 +292,7 @@ GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 
 GITEA_URL = os.getenv("GITEA_URL", "http://gitea:3000")  # Internal Docker URL
 GITEA_HOST_PORT = int(os.getenv("GITEA_HOST_PORT", "3001"))  # Exposed on host
+GITEA_PUBLIC_URL = os.getenv("GITEA_PUBLIC_URL", "")  # URL for browser links (e.g. Tailscale HTTPS)
 GITEA_ADMIN_USER = os.getenv("GITEA_ADMIN_USER", "goose")
 GITEA_ADMIN_PASSWORD = os.getenv("GITEA_ADMIN_PASSWORD", "goose-gitea-local")
 GITEA_ADMIN_EMAIL = os.getenv("GITEA_ADMIN_EMAIL", "goose@localhost")

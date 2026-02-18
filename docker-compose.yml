@@ -51,17 +51,24 @@ services:
       - CACHE_DIR=/app/cache
       - PRELOAD_DIR=/app/preload
 
-      # Code Execution Sandbox
+      # Plugin enable flags
+      - ENABLE_WEB_TOOLS=${ENABLE_WEB_TOOLS:-true}
+      - ENABLE_KB_TOOLS=${ENABLE_KB_TOOLS:-true}
+      - ENABLE_PROCESSING_TOOLS=${ENABLE_PROCESSING_TOOLS:-true}
       - ENABLE_CODE_EXECUTION=${ENABLE_CODE_EXECUTION:-false}
+      - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
+
+      # Code Execution Sandbox
       - CODE_SANDBOX_PYTHON_IMAGE=${CODE_SANDBOX_PYTHON_IMAGE:-python:3.11-slim}
       - CODE_SANDBOX_NODE_IMAGE=${CODE_SANDBOX_NODE_IMAGE:-node:20-slim}
       - CODE_SANDBOX_TIMEOUT=${CODE_SANDBOX_TIMEOUT:-30}
       - CODE_SANDBOX_MEMORY_LIMIT=${CODE_SANDBOX_MEMORY_LIMIT:-256m}
       - CODE_SANDBOX_CPU_LIMIT=${CODE_SANDBOX_CPU_LIMIT:-1.0}
 
-      # Coding Agent (Goose)
-      - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
+      # Coding Agent (pluggable: goose, aider)
+      - CODING_AGENT=${CODING_AGENT:-goose}
       - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
+      - AIDER_IMAGE=${AIDER_IMAGE:-paulgauthier/aider:latest}
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
       - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
@@ -72,6 +79,7 @@ services:
       # Gitea Git Server (for persistent coding projects)
       - GITEA_URL=${GITEA_URL:-http://gitea:3000}
       - GITEA_HOST_PORT=${GITEA_PORT:-3001}
+      - GITEA_PUBLIC_URL=${GITEA_PUBLIC_URL:-}
       - GITEA_ADMIN_USER=${GITEA_ADMIN_USER:-goose}
       - GITEA_ADMIN_PASSWORD=${GITEA_ADMIN_PASSWORD:-goose-gitea-local}
       - GITEA_ADMIN_EMAIL=${GITEA_ADMIN_EMAIL:-goose@localhost}
@@ -272,6 +280,11 @@ services:
       - MCP_SERVERS=${CHAT_UI_MCP_SERVERS:-}
       # MCP tool call timeout — Goose coding agent can take 2-7 min; default 120s is too short
       - MCP_TOOL_TIMEOUT_MS=${MCP_TOOL_TIMEOUT_MS:-600000}
+      # ORIGIN tells SvelteKit which URL the app is served from (CSRF validation).
+      # Without this, Chat UI returns 403 on POST requests from non-localhost origins.
+      # Set to your Tailscale hostname or IP if accessing from other machines.
+      # Example: http://master:3000  or  http://100.90.12.114:3000
+      - ORIGIN=${CHAT_UI_ORIGIN:-http://localhost:${CHAT_UI_PORT:-3000}}
     volumes:
       - chat-ui-data:/data
     extra_hosts:
