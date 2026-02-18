@@ -1,0 +1,371 @@
+# MCP Gateway - Unified Docker Deployment
+# 
+# QUICK START:
+#   1. Choose your deployment profile (see below)
+#   2. Copy .env.example to .env and adjust settings
+#   3. Run: docker compose --profile <PROFILE> up -d
+#
+# DEPLOYMENT PROFILES:
+#   minimal  - Gateway + Search only (lightest, MarkItDown only)
+#   standard - +Knowledge Base (OpenSearch, no Docling)
+#   cpu      - +Docling CPU (full features, no GPU needed)
+#   gpu      - +Docling GPU (best performance, requires NVIDIA GPU)
+#
+# EXAMPLES:
+#   docker compose --profile minimal up -d
+#   docker compose --profile standard up -d
+#   docker compose --profile cpu up -d
+#   docker compose --profile gpu up -d
+
+services:
+  # ============================================================================
+  # MCP GATEWAY (Required - always started)
+  # ============================================================================
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-gateway
+    ports:
+      - "${GATEWAY_PORT:-8000}:8000"
+    environment:
+      # Service URLs (internal Docker network)
+      - SEARXNG_URL=http://searxng:8080
+      - OPENSEARCH_URL=http://opensearch:9200
+      - DOCLING_URL=http://docling-cpu:5001
+      - DOCLING_GPU_URL=http://docling-gpu:5001
+
+      # Vision API (for picture descriptions and web extraction)
+      - VISION_API_URL=${VISION_API_URL:-}
+      - VISION_API_KEY=${VISION_API_KEY:-not-needed}
+      - VISION_MODEL=${VISION_MODEL:-qwen3-vl-4b}
+
+      # Docling configuration
+      - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
+      - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
+      - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
+
+      # Browser settings
+      - PLAYWRIGHT_MCP_TOKEN=${PLAYWRIGHT_MCP_TOKEN:-}
+      - PLAYWRIGHT_DOCKER_HEADED=${PLAYWRIGHT_DOCKER_HEADED:-true}
+      - CACHE_DIR=/app/cache
+      - PRELOAD_DIR=/app/preload
+
+      # Plugin enable flags
+      - ENABLE_WEB_TOOLS=${ENABLE_WEB_TOOLS:-true}
+      - ENABLE_KB_TOOLS=${ENABLE_KB_TOOLS:-true}
+      - ENABLE_PROCESSING_TOOLS=${ENABLE_PROCESSING_TOOLS:-true}
+      - ENABLE_CODE_EXECUTION=${ENABLE_CODE_EXECUTION:-false}
+      - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
+
+      # Code Execution Sandbox
+      - CODE_SANDBOX_PYTHON_IMAGE=${CODE_SANDBOX_PYTHON_IMAGE:-python:3.11-slim}
+      - CODE_SANDBOX_NODE_IMAGE=${CODE_SANDBOX_NODE_IMAGE:-node:20-slim}
+      - CODE_SANDBOX_TIMEOUT=${CODE_SANDBOX_TIMEOUT:-30}
+      - CODE_SANDBOX_MEMORY_LIMIT=${CODE_SANDBOX_MEMORY_LIMIT:-256m}
+      - CODE_SANDBOX_CPU_LIMIT=${CODE_SANDBOX_CPU_LIMIT:-1.0}
+
+      # Coding Agent (pluggable: goose, aider)
+      - CODING_AGENT=${CODING_AGENT:-goose}
+      - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
+      - AIDER_IMAGE=${AIDER_IMAGE:-paulgauthier/aider:latest}
+      - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
+      - GOOSE_WORKSPACE=/app/workspace
+      - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
+      - GOOSE_MODEL=${GOOSE_MODEL:-}
+      - GOOSE_API_KEY=${GOOSE_API_KEY:-}
+      - GOOSE_MCP_GATEWAY_URL=${GOOSE_MCP_GATEWAY_URL:-http://gateway:8000}
+
+      # Gitea Git Server (for persistent coding projects)
+      - GITEA_URL=${GITEA_URL:-http://gitea:3000}
+      - GITEA_HOST_PORT=${GITEA_PORT:-3001}
+      - GITEA_PUBLIC_URL=${GITEA_PUBLIC_URL:-}
+      - GITEA_ADMIN_USER=${GITEA_ADMIN_USER:-goose}
+      - GITEA_ADMIN_PASSWORD=${GITEA_ADMIN_PASSWORD:-goose-gitea-local}
+      - GITEA_ADMIN_EMAIL=${GITEA_ADMIN_EMAIL:-goose@localhost}
+
+      # Chat UI
+      - CHAT_UI_PORT=${CHAT_UI_PORT:-3000}
+    volumes:
+      - ./cache:/app/cache
+      - ./preload:/app/preload:ro
+      - ./.env:/app/.env:ro
+      # Docker socket for code sandbox and coding agent (required when enabled)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Workspace for coding agent
+      - ./workspace:/app/workspace
+    depends_on:
+      searxng:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+        required: false
+      gitea:
+        condition: service_healthy
+        required: false
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    # Allow connecting to services on host (LM Studio, etc.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
+  # ============================================================================
+  # SEARXNG - Search Engine (Required - included in all profiles)
+  # ============================================================================
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: mcp-searxng
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    volumes:
+      - searxng-data:/etc/searxng
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+      # - ./searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-mcp-gateway-secret-key}
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================================
+  # OPENSEARCH - Knowledge Base (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: mcp-opensearch
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
+
+  # ============================================================================
+  # DOCLING CPU - Document processing without GPU (optional, included in: cpu)
+  # ============================================================================
+  docling-cpu:
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.12.0
+    container_name: mcp-docling-cpu
+    profiles:
+      - cpu
+    environment:
+      - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+    volumes:
+      # Persist HF model downloads (including Granite-258M for VLM pipeline)
+      - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
+    ports:
+      - "${DOCLING_CPU_PORT:-5001}:5001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # ============================================================================
+  # DOCLING GPU - Document processing with GPU (optional, included in: gpu)
+  # Requires NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+  # ============================================================================
+  docling-gpu:
+    image: ghcr.io/docling-project/docling-serve-cu128:v1.12.0
+    container_name: mcp-docling-gpu
+    profiles:
+      - gpu
+    environment:
+      - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+      - DOCLING_SERVE_MAX_SYNC_WAIT=600
+    volumes:
+      # Persist HF model downloads (including Granite-258M for VLM pipeline)
+      - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
+    ports:
+      - "${DOCLING_GPU_PORT:-5001}:5001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # ============================================================================
+  # OPTIONAL: OpenSearch Dashboards (for debugging KB, included in: standard, cpu, gpu)
+  # ============================================================================
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    container_name: mcp-opensearch-dashboards
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - "${DASHBOARDS_PORT:-5601}:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - mcp-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # CHAT UI - HuggingFace Chat Interface (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  # Web-based chat UI connected to vLLM. Includes bundled MongoDB for persistence.
+  # Access at http://localhost:3000
+  #
+  # NOTE: MCP tool calling requires the LLM to support OpenAI function calling
+  # format natively. Smaller vision models may not reliably generate tool calls.
+  # To enable MCP tools, uncomment the MCP_SERVERS line below.
+  chat-ui:
+    image: ghcr.io/huggingface/chat-ui-db:latest
+    container_name: mcp-chat-ui
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    ports:
+      - "${CHAT_UI_PORT:-3000}:3000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      # OpenAI-compatible endpoint — Chat UI auto-discovers models from /models
+      - OPENAI_BASE_URL=${CHAT_UI_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENAI_API_KEY=${CHAT_UI_API_KEY:-}
+      # MCP tools — Chat UI requires HTTPS URLs; use tailscale serve --bg 8000
+      # to expose the gateway, then set CHAT_UI_MCP_SERVERS in .env
+      - MCP_SERVERS=${CHAT_UI_MCP_SERVERS:-}
+      # MCP tool call timeout — Goose coding agent can take 2-7 min; default 120s is too short
+      - MCP_TOOL_TIMEOUT_MS=${MCP_TOOL_TIMEOUT_MS:-600000}
+      # ORIGIN tells SvelteKit which URL the app is served from (CSRF validation).
+      # Without this, Chat UI returns 403 on POST requests from non-localhost origins.
+      # Set to your Tailscale hostname or IP if accessing from other machines.
+      # Example: http://master:3000  or  http://100.90.12.114:3000
+      - ORIGIN=${CHAT_UI_ORIGIN:-http://localhost:${CHAT_UI_PORT:-3000}}
+    volumes:
+      - chat-ui-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ============================================================================
+  # GITEA - Self-hosted Git Server (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  # Lightweight Git hosting for persistent coding projects.
+  # Projects created via run_coding_agent(project="name") are stored here.
+  # Web UI at http://localhost:3001 for browsing repos, viewing commits.
+  gitea:
+    image: gitea/gitea:1-rootless
+    container_name: mcp-gitea
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - GITEA__server__DISABLE_SSH=true
+      - GITEA__server__ROOT_URL=http://localhost:${GITEA_PORT:-3001}/
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__mailer__ENABLED=false
+      - GITEA__openid__ENABLE_OPENID_SIGNIN=false
+      - GITEA__openid__ENABLE_OPENID_SIGNUP=false
+      # Note: INSTALL_LOCK is NOT set here — Gitea defaults to false (show install page).
+      # After the gateway runs the install flow, Gitea writes INSTALL_LOCK=true to app.ini.
+      # Setting it as an env var would override app.ini and break post-install restarts.
+    ports:
+      - "${GITEA_PORT:-3001}:3000"
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ============================================================================
+  # GOOSE IMAGE BUILD (optional, builds custom Goose image with Python/Node)
+  # ============================================================================
+  # The base Goose image has no language runtimes (no Python, no Node).
+  # This builds a custom image that adds Python 3, Node.js, git, and curl
+  # so Goose can actually run the code it writes.
+  #
+  # Build once: docker compose build goose-image
+  # The gateway uses GOOSE_IMAGE=mcp-goose:latest by default.
+  goose-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.goose
+    image: mcp-goose:latest
+    container_name: mcp-goose-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  searxng-data:
+  opensearch-data:
+  docling-hf-cache:
+  chat-ui-data:
+  gitea-data:
+  gitea-config:

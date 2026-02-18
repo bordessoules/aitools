@@ -1,0 +1,40 @@
+# SearXNG Bot Detection / IP Limiter Settings
+# Mount to /etc/searxng/limiter.toml
+
+# Allow requests from Docker networks
+[botdetection.ip_limit]
+# Link token is invalid
+link_token = false
+
+# Filter request by IP address
+filter_link_local = false
+filter_loopback = false
+filter_private = false
+
+# Allow requests from private networks (Docker)
+allow_private = true
+
+# Don't block any IPs initially
+ip_limit = 0
+
+# Whitelist all private IP ranges
+ip_whitelist = [
+    "127.0.0.0/8",      # Loopback
+    "10.0.0.0/8",       # Private
+    "172.16.0.0/12",    # Docker default
+    "192.168.0.0/16",   # Private
+    "::1/128",          # IPv6 loopback
+    "fe80::/10",        # IPv6 link-local
+]
+
+[botdetection.ip_lists]
+# Block these IPs
+block_ip = []
+
+# Pass these IPs without checks
+pass_ip = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+]
