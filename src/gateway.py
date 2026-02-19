@@ -9,20 +9,24 @@ Exposed tools:
 - kb_search(query): Search the knowledge base
 - kb_list(): List documents in knowledge base
 - kb_remove(url): Remove document from knowledge base
+- process(content, task, prompt): Process text with LLM
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
 2. search(query) - Find new sources if needed
 3. fetch(url) - Read and evaluate content
 4. add_to_knowledge_base(url) - Save valuable content for later
+5. process(content) - Summarize, extract, translate, or analyze
 """
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
+import httpx
 
 import config
 import routing
@@ -31,6 +35,18 @@ import documents
 import knowledge_base as kb
 
 mcp = FastMCP("mcp-gateway", host="0.0.0.0")
+
+
+# Health endpoint for Docker healthcheck
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+
+def _health(request):
+    return JSONResponse({"status": "ok"})
+
+
+_health_route = Route("/health", _health)
 
 
 @mcp.tool()
@@ -276,25 +292,131 @@ async def kb_remove(url: str) -> str:
     return await kb.remove_document(url)
 
 
+# =============================================================================
+# PROCESS TOOL - Text processing via LLM
+# =============================================================================
+
+BUILTIN_TASKS = {
+    "summarize": "Provide a concise summary of the key points in this text. Focus on the most important information.",
+    "extract": "Extract structured data from this text: names, dates, prices, key entities. Return as a clean list.",
+    "translate": "Translate this text to English. Preserve formatting and structure.",
+    "analyze": "Analyze this text for: sentiment, tone, main themes, and notable patterns. Be concise.",
+}
+
+
+@mcp.tool()
+async def process(content: str, task: str = "summarize", prompt: Optional[str] = None) -> str:
+    """
+    Process text content with a local LLM.
+
+    Use this to post-process content retrieved via fetch(). Great for
+    summarizing articles, extracting structured data, translating, or
+    analyzing sentiment.
+
+    Built-in tasks:
+    - "summarize": Concise summary of key points
+    - "extract": Extract structured data (names, dates, prices, entities)
+    - "translate": Translate content (default: to English)
+    - "analyze": Sentiment, tone, themes, and patterns
+
+    You can also provide a custom prompt to override the built-in tasks.
+
+    Args:
+        content: Text content to process
+        task: Built-in task name ("summarize", "extract", "translate", "analyze")
+        prompt: Custom instruction (overrides task if provided)
+
+    Returns:
+        Processed content from LLM
+
+    Examples:
+        process(article_text, task="summarize")
+        process(product_page, prompt="Extract the price and availability")
+        process(foreign_text, task="translate")
+    """
+    api_url = config.LLM_API_URL
+    if not api_url:
+        return "Error: No LLM endpoint configured. Set LLM_API_URL or VISION_API_URL in .env"
+
+    # Build the system prompt
+    if prompt:
+        system_prompt = prompt
+    elif task in BUILTIN_TASKS:
+        system_prompt = BUILTIN_TASKS[task]
+    else:
+        return f"Error: Unknown task '{task}'. Use: {', '.join(BUILTIN_TASKS.keys())} or provide a custom prompt."
+
+    # Truncate content to avoid blowing context (keep ~12k tokens worth)
+    max_chars = 48000
+    if len(content) > max_chars:
+        content = content[:max_chars] + f"\n\n[...truncated, {len(content)} total chars]"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": content},
+    ]
+
+    params = {
+        "model": config.LLM_MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=config.TIMEOUT_LLM) as client:
+            resp = await client.post(f"{api_url}/chat/completions", json=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except httpx.TimeoutException:
+        return f"Error: LLM request timed out after {config.TIMEOUT_LLM}s"
+    except Exception as e:
+        return f"Error: LLM processing failed: {e}"
+
+
 def run_stdio():
     mcp.run(transport="stdio")
 
 
-def run_sse(host: str = "0.0.0.0", port: int = 8000):
+def run_dual(host: str = "0.0.0.0", port: int = 8000):
+    """Serve both SSE and streamable HTTP transports on one port.
+
+    Endpoints:
+      /sse, /messages/  - SSE transport (Claude Code, Claude Desktop)
+      /mcp              - Streamable HTTP transport (Goose, newer clients)
+      /health           - Health check
+    """
     import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    sse_app = mcp.sse_app()
+    http_app = mcp.streamable_http_app()
+
+    # Combine routes from both transport apps (non-overlapping paths):
+    #   /health            - Health check
+    #   /sse, /messages    - SSE transport (Claude Code, Claude Desktop)
+    #   /mcp               - Streamable HTTP transport (Goose, newer clients)
+    routes = [_health_route] + list(sse_app.routes) + list(http_app.routes)
+
+    # Streamable HTTP requires a lifespan context for session management
+    app = Starlette(routes=routes, lifespan=http_app.router.lifespan_context)
     print(f"Starting MCP Gateway on {host}:{port}")
-    uvicorn.run(mcp.sse_app(), host=host, port=port)
+    print(f"  SSE:             http://{host}:{port}/sse")
+    print(f"  Streamable HTTP: http://{host}:{port}/mcp")
+    print(f"  Health:          http://{host}:{port}/health")
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("-t", "--transport", choices=["stdio", "sse"], default="stdio")
+    parser.add_argument("-t", "--transport", choices=["stdio", "dual"], default="dual")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("-p", "--port", type=int, default=8000)
     args = parser.parse_args()
-    
+
     if args.transport == "stdio":
         run_stdio()
     else:
-        run_sse(args.host, args.port)
+        run_dual(args.host, args.port)

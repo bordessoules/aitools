@@ -21,10 +21,12 @@ services:
   # ============================================================================
   # MCP GATEWAY (Required - always started)
   # ============================================================================
+  # Set GATEWAY_DOCKERFILE=Dockerfile.playwright in .env for Chromium browser support.
+  # Default uses slim Python image (MarkItDown extraction only, smallest image).
   gateway:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ${GATEWAY_DOCKERFILE:-Dockerfile}
     container_name: mcp-gateway
     ports:
       - "${GATEWAY_PORT:-8000}:8000"
@@ -38,19 +40,26 @@ services:
       # Vision API (for picture descriptions and web extraction)
       - VISION_API_URL=${VISION_API_URL:-}
       - VISION_API_KEY=${VISION_API_KEY:-not-needed}
-      - VISION_MODEL=${VISION_MODEL:-qwen3-vl-4b}
+      - VISION_MODEL=${VISION_MODEL:-qwen/qwen3-vl-4b}
+
+      # LLM API (for text processing: summarize, extract, translate, analyze)
+      - LLM_API_URL=${LLM_API_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-not-needed}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
 
       # Docling configuration
       - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-vlm}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
-      # Other settings
+      # Playwright / browser settings
       - PLAYWRIGHT_MCP_TOKEN=${PLAYWRIGHT_MCP_TOKEN:-}
+      - PLAYWRIGHT_DOCKER_HEADED=${PLAYWRIGHT_DOCKER_HEADED:-false}
       - CACHE_DIR=/app/cache
     volumes:
       - ./cache:/app/cache
       - ./.env:/app/.env:ro
+      - ./auth:/app/auth
     depends_on:
       searxng:
         condition: service_healthy

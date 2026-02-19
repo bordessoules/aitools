@@ -7,7 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from gateway import search, fetch
-from fetch import _fetch_html_as_text
 
 
 async def test_search():
@@ -31,7 +30,6 @@ async def test_fetch_http_fallback():
     print("TEST: fetch('https://httpbin.org/html') - HTTP fallback")
     print("=" * 60)
     try:
-        # This will try browser first, then fall back to HTTP
         result = await fetch("https://httpbin.org/html")
         print(result[:600])
         print(f"\n[OK] Got {len(result)} chars")
@@ -56,54 +54,35 @@ async def test_fetch_github():
         return False
 
 
-async def test_http_fallback_direct():
-    """Test HTTP fallback directly (no browser)."""
-    print("\n" + "=" * 60)
-    print("TEST: _fetch_html_as_text() - Direct HTTP")
-    print("=" * 60)
-    try:
-        result = await _fetch_html_as_text("https://httpbin.org/html")
-        print(result[:500])
-        print(f"\n[OK] Got {len(result)} chars")
-        return True
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        return False
-
-
 async def test_kb():
     """Test knowledge base operations."""
     print("\n" + "=" * 60)
     print("TEST: Knowledge Base")
     print("=" * 60)
     try:
-        # Check if OpenSearch is available
         from knowledge_base import is_available
         available = await is_available()
         if not available:
             print("[SKIP] OpenSearch not running (start with: docker compose -f docker-compose.opensearch.yml up -d)")
             return True  # Not a failure, just skipped
-        
+
         print("OpenSearch is available!")
-        
-        # Test adding a document
+
         from knowledge_base import add_document, search, remove_document
         result = await add_document(
             "https://example.com/test",
             "Test Document",
             "This is a test document about artificial intelligence and machine learning.",
             [{"heading": "Introduction", "text": "AI is cool", "tokens": 10}],
-            "test"
+            "test",
         )
         print(f"Add result: {result}")
-        
-        # Test searching
+
         result = await search("artificial intelligence")
         print(f"Search result: {result[:300]}...")
-        
-        # Cleanup
+
         await remove_document("https://example.com/test")
-        
+
         print("\n[OK] Knowledge base works!")
         return True
     except Exception as e:
@@ -115,15 +94,14 @@ async def main():
     print("\n" + "=" * 60)
     print("MCP GATEWAY - TOOL TEST")
     print("=" * 60)
-    
+
     results = {}
-    
+
     results["search"] = await test_search()
-    results["http_fallback_direct"] = await test_http_fallback_direct()
     results["fetch_http_fallback"] = await test_fetch_http_fallback()
     results["fetch_github"] = await test_fetch_github()
     results["knowledge_base"] = await test_kb()
-    
+
     # Summary
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
@@ -131,7 +109,7 @@ async def main():
     for name, passed in results.items():
         status = "[OK]" if passed else "[FAIL]"
         print(f"{status} {name}")
-    
+
     passed = sum(1 for r in results.values() if r)
     print(f"\nTotal: {passed}/{len(results)} passed")
 

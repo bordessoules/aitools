@@ -15,9 +15,7 @@ search:
   safe_search: 0
   # Autocomplete: duckduckgo, google, startpage, swisscows, wikipedia
   autocomplete: "duckduckgo"
-
-# Enable JSON format (required for MCP Gateway)
-search:
+  # JSON format required for MCP Gateway
   formats:
     - html
     - json

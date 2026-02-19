@@ -103,24 +103,24 @@ if (-not $SkipChecks) {
     }
     
     # Check Docling CPU (optional)
-    if ($doclingCpuUrl) {
+    if ($doclingUrl -and -not $useGpu) {
         try {
-            $resp = Invoke-RestMethod -Uri "$doclingCpuUrl/health" -TimeoutSec 3 -ErrorAction SilentlyContinue
-            Write-Host "  [OK] Docling CPU at $doclingCpuUrl" -ForegroundColor Green
+            $resp = Invoke-RestMethod -Uri "$doclingUrl/health" -TimeoutSec 3 -ErrorAction SilentlyContinue
+            Write-Host "  [OK] Docling CPU at $doclingUrl" -ForegroundColor Green
         } catch {
             Write-Host "  [INFO] Docling CPU not available" -ForegroundColor DarkGray
         }
     }
-    
-    # Check LM Studio
-    if ($lmstudioUrl) {
+
+    # Check Vision API (optional)
+    if ($visionApiUrl) {
         try {
-            $resp = Invoke-RestMethod -Uri "$lmstudioUrl/models" -TimeoutSec 5 -ErrorAction SilentlyContinue
+            $resp = Invoke-RestMethod -Uri "$visionApiUrl/models" -TimeoutSec 5 -ErrorAction SilentlyContinue
             $model = $resp.data[0].id
-            Write-Host "  [OK] LM Studio at $lmstudioUrl" -ForegroundColor Green
+            Write-Host "  [OK] Vision API at $visionApiUrl" -ForegroundColor Green
             Write-Host "       Model: $model" -ForegroundColor DarkGray
         } catch {
-            Write-Host "  [WARN] LM Studio not responding at $lmstudioUrl" -ForegroundColor Yellow
+            Write-Host "  [WARN] Vision API not responding at $visionApiUrl" -ForegroundColor Yellow
             Write-Host "         Vision extraction will be disabled" -ForegroundColor Gray
         }
     }

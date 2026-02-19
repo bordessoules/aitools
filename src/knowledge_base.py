@@ -5,7 +5,7 @@ Provides semantic search over documents fetched via Docling.
 """
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -25,14 +25,14 @@ async def is_available() -> bool:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{config.OPENSEARCH_URL}/_cluster/health")
             return resp.status_code == 200
-    except:
+    except Exception:
         return False
 
 
 async def init_index() -> bool:
     """Initialize the knowledge base index if it doesn't exist."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             # Check if index exists
             resp = await client.head(f"{config.OPENSEARCH_URL}/{INDEX_NAME}")
             if resp.status_code == 200:
@@ -108,12 +108,12 @@ async def add_document(url: str, title: str, content: str, chunks: list, source_
         "title": title or "Untitled",
         "content": content[:100000],  # Limit content size
         "chunks": chunks[:100],  # Limit number of chunks
-        "added_at": datetime.now().isoformat(),
+        "added_at": datetime.now(timezone.utc).isoformat(),
         "source_type": source_type
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.put(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}",
                 json=doc
@@ -160,7 +160,7 @@ async def search(query: str, max_results: int = 5) -> str:
     }
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json=search_body
@@ -206,7 +206,7 @@ async def list_documents(max_results: int = 20) -> str:
     await init_index()
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_search",
                 json={
@@ -250,7 +250,7 @@ async def remove_document(url: str) -> str:
     doc_id = _doc_id(url)
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.delete(f"{config.OPENSEARCH_URL}/{INDEX_NAME}/_doc/{doc_id}")
             if resp.status_code == 200:
                 return f"Removed from knowledge base: {url[:60]}..."

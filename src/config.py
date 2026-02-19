@@ -39,23 +39,25 @@ def _env_int(key: str) -> int | None:
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
 
 # =============================================================================
-# VISION API (for general vision tasks)
+# VISION API (for vision tasks: screenshots, image description)
 # =============================================================================
 # OpenAI-compatible endpoint for vision models (Qwen3-VL, GPT-4V, etc.)
 # Used for: picture descriptions in documents, web screenshot extraction
 # Can be: LM Studio, llama.cpp, vLLM, OpenAI, Together, any OpenAI-compatible API
-#
-# Examples:
-#   Local LM Studio:    http://localhost:1234/v1
-#   Local llama.cpp:    http://localhost:8080/v1
-#   Remote server:      http://192.168.1.100:1234/v1
-#   Cloud (Together):   https://api.together.xyz/v1
-#   Cloud (OpenAI):     https://api.openai.com/v1
-#   Docker internal:    http://host.docker.internal:1234/v1
 
 VISION_API_URL = os.getenv("VISION_API_URL") or os.getenv("LMSTUDIO_URL") or None  # Backward compat
 VISION_API_KEY = os.getenv("VISION_API_KEY") or os.getenv("LLM_API_KEY", "not-needed")
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl-4b")  # Model name for vision tasks
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen/qwen3-vl-4b")  # Model name for vision tasks
+
+# =============================================================================
+# TEXT LLM API (for process tool: summarize, extract, translate, analyze)
+# =============================================================================
+# Separate endpoint for a fast text model. Falls back to VISION_API_URL if not set.
+# Can be the same endpoint or a different, faster/cheaper model.
+
+LLM_API_URL = os.getenv("LLM_API_URL") or VISION_API_URL  # Falls back to vision
+LLM_API_KEY = os.getenv("LLM_API_KEY", VISION_API_KEY)
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
 
 # =============================================================================
 # DOCLING DOCUMENT PARSING

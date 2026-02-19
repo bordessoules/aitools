@@ -39,8 +39,8 @@ CMD if [ "$PLAYWRIGHT_DOCKER_HEADED" = "true" ]; then \
         echo "Starting with Xvfb (headed mode)..."; \
         Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR -noreset & \
         sleep 2; \
-        DISPLAY=:99 python -m src.gateway -t sse -p 8000; \
+        DISPLAY=:99 python -m src.gateway -t dual -p 8000; \
     else \
         echo "Starting in headless mode..."; \
-        python -m src.gateway -t sse -p 8000; \
+        python -m src.gateway -t dual -p 8000; \
     fi

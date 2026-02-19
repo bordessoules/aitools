@@ -12,6 +12,7 @@ import asyncio
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 try:
     from playwright.async_api import async_playwright, Browser, BrowserContext, Page
@@ -21,6 +22,7 @@ except ImportError:
     Browser = BrowserContext = Page = None
 
 import config
+from utils import safe_text
 
 # Common ad/tracking domains to block
 AD_DOMAINS = {
@@ -74,8 +76,8 @@ async def is_available() -> bool:
             await browser.close()
             return True
     except Exception as e:
-        error_msg = str(e).encode('ascii', 'ignore').decode('ascii')
-        print(f"[Docker Playwright] Not available: {error_msg[:100]}")
+        error_msg = safe_text(str(e))[:100]
+        print(f"[Docker Playwright] Not available: {error_msg}")
         return False
 
 
@@ -129,7 +131,7 @@ async def setup_ad_blocking(context: BrowserContext):
     
     async def route_handler(route):
         url = route.request.url
-        hostname = route.request.url_parts.hostname
+        hostname = urlparse(url).hostname or ""
         
         # Block ad/tracking domains
         if any(ad_domain in hostname for ad_domain in AD_DOMAINS):
@@ -216,8 +218,8 @@ async def extract_webpage(url: str, wait_for_js: bool = True) -> str:
                 try:
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                     await asyncio.sleep(1)
-                except:
-                    pass
+                except Exception:
+                    pass  # Scroll may fail on some pages
             
             # Get content
             content = await page.content()
@@ -229,15 +231,15 @@ async def extract_webpage(url: str, wait_for_js: bool = True) -> str:
             await browser.close()
 
 
-async def save_auth_state(email: str, password: str, url: str = "https://accounts.google.com"):
+async def save_auth_state(email: str, url: str = "https://accounts.google.com"):
     """
     Create and save authenticated session.
     
     Use this locally to create auth state, then copy to Docker.
-    
+    Opens a headed browser for manual login.
+
     Args:
-        email: Login email
-        password: Login password
+        email: Login email (for pre-filling)
         url: Login URL
     """
     if not PLAYWRIGHT_AVAILABLE:
@@ -264,7 +266,7 @@ async def save_auth_state(email: str, password: str, url: str = "https://account
             try:
                 await page.wait_for_url("**/myaccount.google.com/**", timeout=60000)
                 print("[Auth Setup] Login detected!")
-            except:
+            except Exception:
                 input("[Auth Setup] Press Enter when login is complete...")
             
             # Save state
