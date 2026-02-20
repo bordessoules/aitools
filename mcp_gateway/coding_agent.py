@@ -9,12 +9,15 @@ Spawns Goose in a Docker container with:
 - Access to MCP Gateway for tools (search, fetch, KB)
 - Configurable timeout
 - Optional project mode: Gitea-backed repos for persistent work
+- Async job mode: fire-and-forget with polling (avoids MCP timeout issues)
+- Reviewer mode: MCP-gateway-only agent for code reviews (no local file tools)
 """
 
 import asyncio
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 from . import config
@@ -62,6 +65,58 @@ def _build_command(task: str) -> list[str]:
         ])
 
     return cmd
+
+
+def _build_reviewer_command(task: str) -> list[str]:
+    """Build Goose CLI command for reviewer mode (no local file tools).
+
+    The reviewer agent only has MCP gateway tools (gitea, search, fetch, KB).
+    No --with-builtin developer means no shell, write_file, etc.
+    Ideal for code reviews, PR analysis, issue filing.
+    """
+    cmd = [
+        "run",
+        "--text", task,
+    ]
+
+    # Add MCP gateway (same logic as _build_command)
+    if config.GOOSE_MCP_GATEWAY_URL:
+        gw_url = config.GOOSE_MCP_GATEWAY_URL
+        gw_url = gw_url.replace("://gateway:", "://localhost:")
+        cmd.extend([
+            "--with-streamable-http-extension",
+            f"{gw_url}/mcp",
+        ])
+
+    return cmd
+
+
+# =============================================================================
+# AGENT PROFILES
+# =============================================================================
+# Each profile defines how Goose runs: which tools, which command builder.
+
+AGENT_PROFILES = {
+    "goose": {
+        "label": "Goose Developer",
+        "description": "Full coding agent — has local file tools (shell, write_file) + MCP gateway. Best for coding tasks.",
+        "build_command": _build_command,
+    },
+    "goose-reviewer": {
+        "label": "Goose Reviewer",
+        "description": "Review-only agent — MCP gateway tools only (gitea, search, fetch). No local file access. Best for code reviews and PR analysis.",
+        "build_command": _build_reviewer_command,
+    },
+}
+
+
+# =============================================================================
+# ASYNC JOB TRACKING
+# =============================================================================
+# Jobs are stored in memory — ephemeral, no persistence needed.
+# Each job tracks status, output, and timing for a background agent run.
+
+_jobs: dict[str, dict] = {}
 
 
 def _get_client():
@@ -329,3 +384,221 @@ async def run_task(task: str, workspace: str | None = None, project: str | None 
     except Exception as e:
         log.error("Unexpected Goose error: %s", e)
         return f"Error: {type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Async job runner — fire-and-forget with polling
+# ---------------------------------------------------------------------------
+
+async def _run_job_background(job_id: str, task: str, workspace: str | None,
+                              project: str | None, profile_name: str):
+    """Background coroutine that runs an agent job and stores the result."""
+    job = _jobs[job_id]
+
+    try:
+        profile = AGENT_PROFILES.get(profile_name, AGENT_PROFILES["goose"])
+        job["status"] = "running"
+
+        if not _DOCKER_AVAILABLE:
+            raise RuntimeError("docker Python package not installed")
+
+        workspace_path = Path(workspace) if workspace else config.GOOSE_WORKSPACE
+
+        # Project mode setup
+        clone_url = None
+        if project:
+            err = _validate_project_name(project)
+            if err:
+                raise ValueError(err)
+
+            workspace_path = config.GOOSE_WORKSPACE / project
+
+            from . import gitea
+            clone_url = await gitea.ensure_repo(project)
+            if not clone_url:
+                raise RuntimeError(f"Could not create/access Gitea repo for project '{project}'")
+
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        os.chmod(workspace_path, 0o777)
+
+        client = await asyncio.to_thread(_get_client)
+
+        # Docker-in-Docker path resolution
+        host_workspace = _get_host_workspace_path()
+        if host_workspace:
+            if project:
+                host_workspace = f"{host_workspace}/{project}"
+        else:
+            host_workspace = str(workspace_path.resolve())
+
+        volumes = {
+            host_workspace: {"bind": "/workspace", "mode": "rw"},
+        }
+
+        # Pre-task: clone or pull if project mode
+        if project and clone_url:
+            await _git_pre_task(client, clone_url, host_workspace, workspace_path, project)
+
+        # Run container in detached mode (non-blocking)
+        build_cmd = profile["build_command"]
+        container = await asyncio.to_thread(
+            client.containers.run,
+            image=config.GOOSE_IMAGE,
+            command=build_cmd(task),
+            volumes=volumes,
+            working_dir="/workspace",
+            network_mode="host",
+            environment={
+                "GOOSE_PROVIDER": "openai",
+                "GOOSE_MODEL": _goose_model(),
+                "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
+                "OPENAI_BASE_PATH": "/v1/chat/completions",
+                "OPENAI_API_KEY": _goose_api_key(),
+            },
+            extra_hosts={"host.docker.internal": "host-gateway"},
+            mem_limit=config.GOOSE_MEMORY_LIMIT,
+            remove=False,  # Don't auto-remove — we need to read logs
+            stdout=True,
+            stderr=True,
+            detach=True,  # Non-blocking!
+        )
+
+        log.info("Job %s: container %s started", job_id[:8], container.short_id)
+
+        # Wait for container to finish (non-blocking via asyncio)
+        exit_info = await asyncio.to_thread(container.wait)
+        exit_code = exit_info.get("StatusCode", -1)
+
+        # Read output
+        output = await asyncio.to_thread(container.logs, stdout=True, stderr=True)
+        result = output.decode("utf-8", errors="replace")
+
+        # Clean up container
+        try:
+            await asyncio.to_thread(container.remove)
+        except Exception:
+            pass
+
+        if len(result) > 100_000:
+            result = result[:100_000] + "\n\n... (output truncated at 100,000 chars)"
+
+        # Post-task: commit and push if project mode
+        git_info = ""
+        if project and clone_url:
+            git_info = "\n" + await _git_post_task(client, host_workspace, task)
+
+        elapsed = time.monotonic() - job["started_at"]
+        log.info("Job %s: done in %.0fs (exit=%d)", job_id[:8], elapsed, exit_code)
+
+        project_info = f" | project: {project}" if project else ""
+        job["status"] = "completed" if exit_code == 0 else "failed"
+        job["exit_code"] = exit_code
+        job["output"] = f"{result}\n\n[{profile['label']} completed in {elapsed:.0f}s | workspace: {workspace_path}{project_info}]{git_info}"
+        job["finished_at"] = time.monotonic()
+
+    except Exception as e:
+        log.error("Job %s: error — %s", job_id[:8], e)
+        job["status"] = "failed"
+        job["output"] = f"{type(e).__name__}: {e}"
+        job["finished_at"] = time.monotonic()
+
+
+async def run_task_async(task: str, workspace: str | None = None,
+                         project: str | None = None,
+                         agent: str = "goose") -> str:
+    """Start a coding task asynchronously. Returns immediately with a job ID.
+
+    Use check_job() to poll for results. This avoids MCP timeout issues
+    on long-running tasks.
+
+    Args:
+        task: Natural language description of the coding task
+        workspace: Optional workspace directory path
+        project: Optional Gitea-backed project name
+        agent: Agent profile to use: "goose" (developer) or "goose-reviewer"
+
+    Returns:
+        Job ID and status message
+    """
+    if agent not in AGENT_PROFILES:
+        available = ", ".join(AGENT_PROFILES.keys())
+        return f"Error: Unknown agent '{agent}'. Available: {available}"
+
+    job_id = uuid.uuid4().hex[:12]
+    profile = AGENT_PROFILES[agent]
+
+    _jobs[job_id] = {
+        "status": "starting",
+        "agent": agent,
+        "agent_label": profile["label"],
+        "task": task[:200],
+        "project": project,
+        "started_at": time.monotonic(),
+        "finished_at": None,
+        "exit_code": None,
+        "output": None,
+    }
+
+    # Fire and forget
+    asyncio.create_task(_run_job_background(job_id, task, workspace, project, agent))
+
+    return (
+        f"Job started: {job_id}\n"
+        f"Agent: {profile['label']}\n"
+        f"Project: {project or '(none)'}\n"
+        f"\nUse check_coding_job('{job_id}') to poll for results."
+    )
+
+
+def check_job(job_id: str) -> str:
+    """Check the status of an async coding job.
+
+    Args:
+        job_id: The job ID returned by run_task_async()
+
+    Returns:
+        Job status and output (if completed)
+    """
+    if job_id not in _jobs:
+        if _jobs:
+            recent = sorted(_jobs.items(), key=lambda x: x[1]["started_at"], reverse=True)[:5]
+            lines = [f"Job '{job_id}' not found. Recent jobs:"]
+            for jid, j in recent:
+                elapsed = time.monotonic() - j["started_at"]
+                lines.append(f"  {jid}: {j['status']} — {j['agent_label']} ({elapsed:.0f}s)")
+            return "\n".join(lines)
+        return f"Job '{job_id}' not found. No jobs have been started."
+
+    job = _jobs[job_id]
+    elapsed = time.monotonic() - job["started_at"]
+
+    lines = [
+        f"Job: {job_id}",
+        f"Status: {job['status']}",
+        f"Agent: {job['agent_label']}",
+        f"Task: {job['task']}",
+        f"Elapsed: {elapsed:.0f}s",
+    ]
+
+    if job["status"] in ("completed", "failed"):
+        if job["exit_code"] is not None:
+            lines.append(f"Exit code: {job['exit_code']}")
+        lines.append("")
+        lines.append("--- Agent Output ---")
+        lines.append(job.get("output", "(no output)"))
+    else:
+        lines.append(f"\nStill working... check again in a few seconds.")
+
+    return "\n".join(lines)
+
+
+def list_agent_profiles() -> str:
+    """List available agent profiles.
+
+    Returns:
+        Agent names and descriptions
+    """
+    lines = ["Available agent profiles:\n"]
+    for name, profile in AGENT_PROFILES.items():
+        lines.append(f"  {name}: {profile['description']}")
+    return "\n".join(lines)

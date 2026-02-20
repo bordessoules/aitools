@@ -1,7 +1,14 @@
 """Coding agent plugin with pluggable agent backends.
 
-Provides run_coding_agent() and list_projects() tools.
+Provides tools:
+- run_coding_agent() — synchronous, blocks until done (good for short tasks)
+- delegate_coding_agent() — async, returns job ID instantly (good for long tasks)
+- check_coding_job() — poll async job status
+- list_coding_agents() — show available agent profiles
+- list_projects() — show Gitea-backed projects
+
 The active agent is selected via CODING_AGENT env var (default: goose).
+Agent profiles (goose, goose-reviewer) are defined in coding_agent.py.
 
 Adding a new agent backend:
 1. Add an entry to AGENTS dict below
@@ -27,6 +34,12 @@ AGENTS = {
         "image_config": "GOOSE_IMAGE",
         "git_author": "Goose Agent",
         "git_email": "goose@mcp-gateway",
+    },
+    "goose-reviewer": {
+        "label": "Goose Reviewer",
+        "image_config": "GOOSE_IMAGE",
+        "git_author": "Goose Reviewer",
+        "git_email": "goose-reviewer@mcp-gateway",
     },
     "aider": {
         "label": "Aider",
@@ -83,6 +96,71 @@ def register(mcp):
             Agent output with task results
         """
         return await coding_agent.run_task(task, workspace, project=project)
+
+    # ------------------------------------------------------------------
+    # Async tools — fire-and-forget with polling (avoids MCP timeouts)
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def delegate_coding_agent(
+        task: str,
+        workspace: str | None = None,
+        project: str | None = None,
+        agent: str = "goose",
+    ) -> str:
+        """
+        Start a coding agent asynchronously (returns immediately with a job ID).
+
+        Unlike run_coding_agent which blocks until completion, this tool returns
+        instantly. Use check_coding_job() to poll for results. Best for long-running
+        tasks that would otherwise timeout.
+
+        Available agents:
+        - "goose": Full developer agent with local file tools + MCP gateway
+        - "goose-reviewer": Review-only agent with MCP gateway tools only (no local files)
+
+        Args:
+            task: Natural language description of the task
+            workspace: Optional workspace directory path (default: ./workspace)
+            project: Optional Gitea-backed project name for persistent work
+            agent: Agent profile to use (default: "goose"). Use "goose-reviewer" for code reviews.
+
+        Returns:
+            Job ID to use with check_coding_job()
+        """
+        return await coding_agent.run_task_async(task, workspace, project=project, agent=agent)
+
+    @mcp.tool()
+    async def check_coding_job(job_id: str) -> str:
+        """
+        Check the status of an async coding agent job.
+
+        Poll this after calling delegate_coding_agent() to get results.
+        Returns status (starting/running/completed/failed) and output when done.
+
+        Args:
+            job_id: The job ID returned by delegate_coding_agent()
+
+        Returns:
+            Job status and agent output (if completed)
+        """
+        return coding_agent.check_job(job_id)
+
+    @mcp.tool()
+    async def list_coding_agents() -> str:
+        """
+        List available coding agent profiles.
+
+        Shows agent types that can be used with delegate_coding_agent(agent=...).
+
+        Returns:
+            Agent names and descriptions
+        """
+        return coding_agent.list_agent_profiles()
+
+    # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
 
     @mcp.tool()
     async def list_projects() -> str:
