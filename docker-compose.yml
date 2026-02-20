@@ -52,6 +52,10 @@ services:
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-vlm}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
+      # Gitea (Git collaboration)
+      - GITEA_URL=http://host.docker.internal:3001
+      - GITEA_TOKEN=${GITEA_TOKEN:-}
+
       # Playwright / browser settings
       - PLAYWRIGHT_MCP_TOKEN=${PLAYWRIGHT_MCP_TOKEN:-}
       - PLAYWRIGHT_DOCKER_HEADED=${PLAYWRIGHT_DOCKER_HEADED:-false}

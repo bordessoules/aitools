@@ -204,3 +204,11 @@ GITHUB_PATTERNS = [
 # =============================================================================
 
 OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
+
+# =============================================================================
+# GITEA (Git collaboration)
+# =============================================================================
+
+GITEA_URL = os.getenv("GITEA_URL", "http://localhost:3001")
+GITEA_TOKEN = os.getenv("GITEA_TOKEN", "")
+TIMEOUT_GITEA = int(os.getenv("TIMEOUT_GITEA", "30"))

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-runner": {
+      "command": "python",
+      "args": ["-m", "src.agent_runner", "-t", "stdio"],
+      "cwd": "C:\\Ai_dir\\aitools\\.claude\\worktrees\\elastic-kepler",
+      "env": {
+        "GOOSE_PATH": "C:\\Users\\linkr\\goose\\goose.exe"
+      }
+    }
+  }
+}

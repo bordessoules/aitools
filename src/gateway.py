@@ -33,6 +33,7 @@ import routing
 import fetch as fetch_module
 import documents
 import knowledge_base as kb
+import gitea
 
 mcp = FastMCP("mcp-gateway", host="0.0.0.0")
 
@@ -372,6 +373,194 @@ async def process(content: str, task: str = "summarize", prompt: Optional[str] =
         return f"Error: LLM request timed out after {config.TIMEOUT_LLM}s"
     except Exception as e:
         return f"Error: LLM processing failed: {e}"
+
+
+# =============================================================================
+# GITEA TOOLS - Git collaboration via Gitea REST API
+# =============================================================================
+
+@mcp.tool()
+async def gitea_list_repos() -> str:
+    """List Git repositories on the local Gitea server.
+
+    Returns:
+        List of repositories with names and descriptions
+    """
+    return await gitea.list_repos()
+
+
+@mcp.tool()
+async def gitea_create_repo(name: str, description: str = "", private: bool = False) -> str:
+    """Create a new Git repository on Gitea.
+
+    Args:
+        name: Repository name (e.g. "my-project")
+        description: Short description of the repository
+        private: Whether the repo should be private
+
+    Returns:
+        Confirmation with repository URL
+    """
+    return await gitea.create_repo(name, description, private)
+
+
+@mcp.tool()
+async def gitea_list_branches(owner: str, repo: str) -> str:
+    """List branches in a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+
+    Returns:
+        List of branch names
+    """
+    return await gitea.list_branches(owner, repo)
+
+
+@mcp.tool()
+async def gitea_create_branch(
+    owner: str, repo: str, branch_name: str, from_branch: str = "main"
+) -> str:
+    """Create a new branch in a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        branch_name: Name for the new branch
+        from_branch: Branch to create from (default: main)
+
+    Returns:
+        Confirmation message
+    """
+    return await gitea.create_branch(owner, repo, branch_name, from_branch)
+
+
+@mcp.tool()
+async def gitea_get_file(
+    owner: str, repo: str, filepath: str, branch: str = "main"
+) -> str:
+    """Read a file from a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        filepath: Path to the file (e.g. "src/main.py")
+        branch: Branch to read from (default: main)
+
+    Returns:
+        File content
+    """
+    return await gitea.get_file(owner, repo, filepath, branch)
+
+
+@mcp.tool()
+async def gitea_put_file(
+    owner: str, repo: str, filepath: str, content: str, message: str, branch: str = "main"
+) -> str:
+    """Create or update a file in a Gitea repository (creates a commit).
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        filepath: Path for the file (e.g. "src/main.py")
+        content: File content to write
+        message: Commit message
+        branch: Branch to commit to (default: main)
+
+    Returns:
+        Confirmation message
+    """
+    return await gitea.put_file(owner, repo, filepath, content, message, branch)
+
+
+@mcp.tool()
+async def gitea_create_pr(
+    owner: str, repo: str, title: str, body: str, head: str, base: str = "main"
+) -> str:
+    """Create a pull request in a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        title: PR title
+        body: PR description
+        head: Source branch name
+        base: Target branch name (default: main)
+
+    Returns:
+        Confirmation with PR number and URL
+    """
+    return await gitea.create_pull_request(owner, repo, title, body, head, base)
+
+
+@mcp.tool()
+async def gitea_list_prs(owner: str, repo: str, state: str = "open") -> str:
+    """List pull requests in a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        state: Filter by state: "open", "closed", or "all"
+
+    Returns:
+        List of pull requests with details
+    """
+    return await gitea.list_pull_requests(owner, repo, state)
+
+
+@mcp.tool()
+async def gitea_add_pr_review(
+    owner: str, repo: str, pr_index: int, body: str, event: str = "COMMENT"
+) -> str:
+    """Submit a review on a pull request.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        pr_index: Pull request number
+        body: Review comment text
+        event: Review type: "APPROVE", "REQUEST_CHANGES", or "COMMENT"
+
+    Returns:
+        Confirmation message
+    """
+    return await gitea.create_pr_review(owner, repo, pr_index, body, event)
+
+
+@mcp.tool()
+async def gitea_create_issue(
+    owner: str, repo: str, title: str, body: str = ""
+) -> str:
+    """Create an issue in a Gitea repository.
+
+    Use issues to track tasks for agent collaboration.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        title: Issue title
+        body: Issue description (markdown)
+
+    Returns:
+        Confirmation with issue number and URL
+    """
+    return await gitea.create_issue(owner, repo, title, body)
+
+
+@mcp.tool()
+async def gitea_list_issues(owner: str, repo: str, state: str = "open") -> str:
+    """List issues in a Gitea repository.
+
+    Args:
+        owner: Repository owner username
+        repo: Repository name
+        state: Filter by state: "open", "closed", or "all"
+
+    Returns:
+        List of issues with titles and labels
+    """
+    return await gitea.list_issues(owner, repo, state)
 
 
 def run_stdio():

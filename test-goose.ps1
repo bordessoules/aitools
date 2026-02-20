@@ -1,5 +1,5 @@
 $env:GOOSE_PROVIDER = "openai"
-$env:GOOSE_MODEL = "gpt-oss-20b"
+$env:GOOSE_MODEL = "openai/gpt-oss-20b"
 $env:OPENAI_API_KEY = "not-needed"
 $env:OPENAI_HOST = "http://bluefin:1234"
 
