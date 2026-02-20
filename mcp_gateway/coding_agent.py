@@ -44,25 +44,36 @@ def _goose_api_key() -> str:
     return config.GOOSE_API_KEY or config.VISION_API_KEY or API_KEY_PLACEHOLDER
 
 
+def _mcp_gateway_url() -> str | None:
+    """Get MCP gateway URL adjusted for Goose's network context.
+
+    Goose runs with network_mode="host", so Docker DNS names (e.g. "gateway")
+    won't resolve. Replace with localhost equivalent.
+    Uses /mcp endpoint (Streamable HTTP transport, required by Goose).
+    """
+    if not config.GOOSE_MCP_GATEWAY_URL:
+        return None
+    url = config.GOOSE_MCP_GATEWAY_URL.replace("://gateway:", "://localhost:")
+    return f"{url}/mcp"
+
+
 def _build_command(task: str) -> list[str]:
-    """Build Goose CLI command with extensions as flags."""
+    """Build Goose CLI command with extensions as flags.
+
+    Uses --provider and --model CLI flags to force the correct model,
+    preventing Goose from falling back to its default (gpt-4o-mini).
+    """
     cmd = [
         "run",
+        "--provider", "openai",
+        "--model", _goose_model(),
         "--with-builtin", "developer",
         "--text", task,
     ]
 
-    # Add MCP gateway as Streamable HTTP extension if configured.
-    # Goose runs with network_mode="host", so Docker DNS names (e.g. "gateway")
-    # won't resolve. Replace with localhost equivalent.
-    # Uses /mcp endpoint (Streamable HTTP transport, required by Goose).
-    if config.GOOSE_MCP_GATEWAY_URL:
-        gw_url = config.GOOSE_MCP_GATEWAY_URL
-        gw_url = gw_url.replace("://gateway:", "://localhost:")
-        cmd.extend([
-            "--with-streamable-http-extension",
-            f"{gw_url}/mcp",
-        ])
+    gw = _mcp_gateway_url()
+    if gw:
+        cmd.extend(["--with-streamable-http-extension", gw])
 
     return cmd
 
@@ -73,20 +84,19 @@ def _build_reviewer_command(task: str) -> list[str]:
     The reviewer agent only has MCP gateway tools (gitea, search, fetch, KB).
     No --with-builtin developer means no shell, write_file, etc.
     Ideal for code reviews, PR analysis, issue filing.
+
+    Uses --provider and --model CLI flags to force the correct model.
     """
     cmd = [
         "run",
+        "--provider", "openai",
+        "--model", _goose_model(),
         "--text", task,
     ]
 
-    # Add MCP gateway (same logic as _build_command)
-    if config.GOOSE_MCP_GATEWAY_URL:
-        gw_url = config.GOOSE_MCP_GATEWAY_URL
-        gw_url = gw_url.replace("://gateway:", "://localhost:")
-        cmd.extend([
-            "--with-streamable-http-extension",
-            f"{gw_url}/mcp",
-        ])
+    gw = _mcp_gateway_url()
+    if gw:
+        cmd.extend(["--with-streamable-http-extension", gw])
 
     return cmd
 
