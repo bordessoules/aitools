@@ -89,7 +89,7 @@ async def _preload_file(path: Path) -> str | None:
 
 async def _fetch_with_docling(path: Path, url: str) -> documents.Doc | None:
     """Send local file to Docling for conversion."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    docling_url = config.docling_url()
     options = documents._build_docling_options()
 
     try:

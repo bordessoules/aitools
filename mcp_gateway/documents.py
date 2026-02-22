@@ -155,9 +155,11 @@ def _init_db():
         log.error("Failed to initialize cache database: %s", e)
 
 
+_init_db()
+
+
 def get(url: str) -> Doc | None:
     """Get cached document or None."""
-    _init_db()
     h = _url_hash(url)
     
     with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
@@ -182,7 +184,6 @@ def get(url: str) -> Doc | None:
 
 def save(url: str, title: str, markdown: str, backend: str = "unknown"):
     """Save document with chunked content."""
-    _init_db()
     h = _url_hash(url)
     chunks = _chunk_content(markdown)
     
@@ -209,8 +210,6 @@ def delete(url: str):
 
 def cache_action(action: str, url: str = "") -> str:
     """Manage cache (stats, list, clear, clear_all)."""
-    _init_db()
-    
     if action == "stats":
         with sqlite3.connect(config.CACHE_DIR / "cache.db") as conn:
             doc_count = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
@@ -308,7 +307,7 @@ async def fetch_and_cache(url: str) -> Doc | None:
 async def _check_docling_available() -> bool:
     """Check if Docling GPU service is available."""
     try:
-        docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+        docling_url = config.docling_url()
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{docling_url}/health")
             return resp.status_code == 200
@@ -318,7 +317,7 @@ async def _check_docling_available() -> bool:
 
 async def _fetch_with_docling(url: str) -> Doc | None:
     """Fetch document using Docling service."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    docling_url = config.docling_url()
 
     # Build options based on pipeline mode (vlm or standard)
     options = _build_docling_options()

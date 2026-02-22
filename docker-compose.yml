@@ -68,7 +68,10 @@ services:
       # Coding Agent (pluggable: goose, aider)
       - CODING_AGENT=${CODING_AGENT:-goose}
       - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
-      - AIDER_IMAGE=${AIDER_IMAGE:-paulgauthier/aider:latest}
+      # Agent Docker images (built via: docker compose --profile build build)
+      - QWEN_IMAGE=${QWEN_IMAGE:-mcp-qwen:latest}
+      - VIBE_IMAGE=${VIBE_IMAGE:-mcp-vibe:latest}
+      - KIMI_IMAGE=${KIMI_IMAGE:-mcp-kimi:latest}
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
       - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
@@ -348,12 +351,43 @@ services:
   #
   # Build once: docker compose build goose-image
   # The gateway uses GOOSE_IMAGE=mcp-goose:latest by default.
+  # Build once: docker compose --profile build build
   goose-image:
     build:
       context: .
       dockerfile: Dockerfile.goose
     image: mcp-goose:latest
     container_name: mcp-goose-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  qwen-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.qwen
+    image: mcp-qwen:latest
+    container_name: mcp-qwen-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  vibe-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.vibe
+    image: mcp-vibe:latest
+    container_name: mcp-vibe-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  kimi-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.kimi
+    image: mcp-kimi:latest
+    container_name: mcp-kimi-build
     profiles:
       - build
     entrypoint: ["echo", "Image built successfully"]
