@@ -76,6 +76,11 @@ DOCLING_URL = os.getenv("DOCLING_URL", "http://localhost:5001")
 DOCLING_GPU_URL = os.getenv("DOCLING_GPU_URL", "http://localhost:5001")
 USE_DOCLING_GPU = os.getenv("USE_DOCLING_GPU", "false").lower() == "true"
 
+
+def docling_url() -> str:
+    """Return the active Docling service URL (GPU or CPU)."""
+    return DOCLING_GPU_URL if USE_DOCLING_GPU else DOCLING_URL
+
 # Pipeline mode:
 #   "vlm"      - Sends pages to VISION_API_URL for conversion (best quality)
 #                Falls back to local Granite-258M if no VISION_API_URL
@@ -271,9 +276,11 @@ PROCESSOR_MAX_TOKENS = int(os.getenv("PROCESSOR_MAX_TOKENS", "8000"))
 
 CODING_AGENT = os.getenv("CODING_AGENT", "goose")
 
-# Per-agent Docker images (only the selected agent's image is used)
+# Per-agent Docker images
 GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "mcp-goose:latest")
-AIDER_IMAGE = os.getenv("AIDER_IMAGE", "paulgauthier/aider:latest")
+QWEN_IMAGE = os.getenv("QWEN_IMAGE", "mcp-qwen:latest")
+VIBE_IMAGE = os.getenv("VIBE_IMAGE", "mcp-vibe:latest")
+KIMI_IMAGE = os.getenv("KIMI_IMAGE", "mcp-kimi:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
 GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
 GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")

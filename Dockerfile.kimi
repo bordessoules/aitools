@@ -1,0 +1,21 @@
+# Kimi Code CLI agent with git
+# Build: docker compose build kimi-image
+# Package: kimi-cli (Python, installed via uv)
+# Auth: OAuth via /login command inside CLI
+
+FROM python:3.13-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv then kimi-cli
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    . $HOME/.local/bin/env && \
+    uv tool install kimi-cli
+
+# Put uv-managed tools on PATH
+ENV PATH="/root/.local/bin:$PATH"
+
+WORKDIR /workspace
