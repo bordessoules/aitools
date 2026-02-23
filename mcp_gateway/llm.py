@@ -2,8 +2,7 @@
 Shared LLM/VLM utilities.
 
 Single source of truth for Vision API parameter building, authentication,
-and LLM calls. Used by fetch.py (web extraction), documents.py (Docling),
-and processor.py (content processing).
+and LLM calls. Used by fetch.py (web extraction) and documents.py (Docling).
 """
 
 import httpx

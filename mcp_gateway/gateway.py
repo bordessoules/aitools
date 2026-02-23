@@ -4,16 +4,14 @@ MCP Gateway - Plugin-based tool server.
 Tools are organized into plugins (mcp_gateway/plugins/), each enabled via env var:
   ENABLE_WEB_TOOLS=true        search, fetch, fetch_section, cache
   ENABLE_KB_TOOLS=true         kb_search, kb_list, kb_remove, add_to_knowledge_base
-  ENABLE_PROCESSING_TOOLS=true process
   ENABLE_CODE_EXECUTION=false  run_code
-  ENABLE_CODING_AGENT=false    run_coding_agent, list_projects
+  ENABLE_CODING_AGENT=false    delegate_coding_agent, check_coding_job, list_agents, list_projects
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
 2. search(query) - Find new sources if needed
 3. fetch(url) - Read and evaluate content
 4. If valuable: add_to_knowledge_base(url) - Save for later
-5. process(content, task) - Post-process fetched content
 """
 
 import httpx
