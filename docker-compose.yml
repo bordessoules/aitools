@@ -74,9 +74,6 @@ services:
       - KIMI_IMAGE=${KIMI_IMAGE:-mcp-kimi:latest}
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
-      - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
-      - GOOSE_MODEL=${GOOSE_MODEL:-}
-      - GOOSE_API_KEY=${GOOSE_API_KEY:-}
       - GOOSE_MCP_GATEWAY_URL=${GOOSE_MCP_GATEWAY_URL:-http://gateway:8000}
 
       # Gitea Git Server (for persistent coding projects)
@@ -86,6 +83,13 @@ services:
       - GITEA_ADMIN_USER=${GITEA_ADMIN_USER:-goose}
       - GITEA_ADMIN_PASSWORD=${GITEA_ADMIN_PASSWORD:-goose-gitea-local}
       - GITEA_ADMIN_EMAIL=${GITEA_ADMIN_EMAIL:-goose@localhost}
+
+      # LLM inference (llamaswap auto-swaps models by name)
+      - LLM_HOST=${LLM_HOST:-http://host.docker.internal:8085}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-devstral}
+      - DEVSTRAL_MODEL=${DEVSTRAL_MODEL:-Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf}
+      - QWEN_CODER_MODEL=${QWEN_CODER_MODEL:-Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf}
+      - QWEN3_NEXT_MODEL=${QWEN3_NEXT_MODEL:-Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf}
 
       # Chat UI
       - CHAT_UI_PORT=${CHAT_UI_PORT:-3000}
@@ -343,6 +347,84 @@ services:
       retries: 3
 
   # ============================================================================
+  # LLAMA-SWAP — unified LLM inference proxy (optional, GPU)
+  # ============================================================================
+  # Auto-swaps between models on the same GPU based on request model name.
+  # Models: Devstral (128k ctx), Qwen3-Coder (128k ctx) — only one loaded at a time.
+  #
+  # First run:  docker compose --profile llm run --rm llm-model-loader
+  # Then start: docker compose --profile llm up -d llama-swap
+  # Web UI:     http://localhost:8080/ui
+  # Logs:       docker logs -f mcp-llama-swap
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:cuda
+    container_name: mcp-llama-swap
+    profiles:
+      - llm
+    ports:
+      - "${LLAMASWAP_PORT:-8080}:8080"
+    volumes:
+      - llm-models:/models:ro
+      - ./data/llamaswap-config.yaml:/app/config.yaml:ro
+      - ./data/devstral-chat-template.jinja:/app/devstral-chat-template.jinja:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  # One-time model loader — copies GGUFs from Windows to Docker volume
+  llm-model-loader:
+    image: busybox
+    profiles:
+      - llm
+    volumes:
+      - ${LLM_MODEL_DIR:-/c/llm_models/byteshape}:/src:ro
+      - ${LLM_MODEL_DIR_2:-/c/llm_models/noctrex}:/src2:ro
+      - llm-models:/dst
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== LLM Model Loader ==="
+        for MODEL in \
+          "Devstral-Small-2-24B-Instruct-2512-GGUF/Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf" \
+          "Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"
+        do
+          BASENAME=$$(basename "$$MODEL")
+          if [ -f "/dst/$$BASENAME" ]; then
+            echo "Already loaded: $$BASENAME"
+          else
+            echo "Copying $$BASENAME ..."
+            cp "/src/$$MODEL" "/dst/$$BASENAME"
+            echo "Done: $$BASENAME"
+          fi
+        done
+        for MODEL in \
+          "Qwen3-Coder-Next-REAM-MXFP4_MOE-GGUF/Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"
+        do
+          BASENAME=$$(basename "$$MODEL")
+          if [ -f "/dst/$$BASENAME" ]; then
+            echo "Already loaded: $$BASENAME"
+          else
+            echo "Copying $$BASENAME ..."
+            cp "/src2/$$MODEL" "/dst/$$BASENAME"
+            echo "Done: $$BASENAME"
+          fi
+        done
+        echo "=== All models ready ==="
+
+  # ============================================================================
   # GOOSE IMAGE BUILD (optional, builds custom Goose image with Python/Node)
   # ============================================================================
   # The base Goose image has no language runtimes (no Python, no Node).
@@ -403,3 +485,4 @@ volumes:
   chat-ui-data:
   gitea-data:
   gitea-config:
+  llm-models:
