@@ -46,6 +46,7 @@ def register(mcp):
     async def delegate_coding_agent(
         task: str,
         agent: str = "goose",
+        model: str | None = None,
         project: str | None = None,
         owner: str | None = None,
         repo: str | None = None,
@@ -65,6 +66,8 @@ def register(mcp):
         Args:
             task: What the agent should do (natural language)
             agent: Agent profile (default: "goose"). See list_coding_agents()
+            model: Model alias or GGUF filename (default: DEFAULT_MODEL env var).
+                   Aliases: "devstral", "qwen-coder", "qwen3-next"
             project: Gitea project name (auto-creates repo if needed)
             owner: Gitea repo owner (alternative to project, for existing repos)
             repo: Gitea repo name (used with owner)
@@ -79,7 +82,8 @@ def register(mcp):
         return await coding_agent.run_task_async(
             task, workspace=workspace, project=project, agent=agent,
             owner=owner, repo=repo, branch=branch,
-            max_turns=max_turns, system_prompt=system_prompt)
+            max_turns=max_turns, system_prompt=system_prompt,
+            model=model)
 
     @mcp.tool()
     async def check_coding_job(job_id: str) -> str:

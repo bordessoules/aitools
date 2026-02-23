@@ -7,15 +7,18 @@ All agents run in Docker with:
 - Optional Gitea-backed project mode (clone before, push after)
 - Async job mode with polling (avoids MCP timeout issues)
 
-Supported agents:
-- goose: Full coding agent (Goose by Block) — local file tools + MCP gateway
-- goose-reviewer: Review-only Goose — MCP gateway only, no local files
-- goose-devstral: Goose + devstral via llama.cpp (128k ctx)
-- qwen: Qwen Code CLI with local LM Studio
-- qwen-cloud: Qwen Code CLI via qwen.ai cloud
-- qwen-devstral: Qwen CLI + devstral via llama.cpp
-- vibe: Mistral Vibe CLI + devstral
-- kimi: Kimi Code CLI (cloud subscription)
+Agents (1 profile per CLI, model selected at dispatch time):
+- goose:          Goose by Block — local file tools + MCP gateway
+- goose-reviewer: Goose review-only — MCP gateway tools, no local files
+- vibe:           Mistral Vibe CLI + MCP gateway
+- qwen:           Qwen Code CLI + MCP gateway (local LLM)
+- qwen-cloud:     Qwen Code CLI via qwen.ai cloud API
+- kimi:           Kimi Code CLI via kimi.com cloud API + MCP gateway
+
+Models (auto-swapped by llamaswap):
+- devstral:    Devstral Small 24B
+- qwen-coder:  Qwen3 Coder 30B A3B
+- qwen3-next:  Qwen3 Coder Next 80B MoE
 """
 
 import asyncio
@@ -60,16 +63,30 @@ def cfg(key: str, default: str = "") -> str:
 
 
 # =============================================================================
-# GOOSE HELPERS
+# MODEL + ENDPOINT HELPERS
 # =============================================================================
 
-def _goose_model() -> str:
-    return cfg("GOOSE_MODEL") or config.VISION_MODEL
+def _llm_host() -> str:
+    """Single LLM endpoint — llamaswap auto-swaps models by name."""
+    return cfg("LLM_HOST", "http://host.docker.internal:8085")
 
 
-def _goose_api_key() -> str:
-    from .llm import API_KEY_PLACEHOLDER
-    return cfg("GOOSE_API_KEY") or config.VISION_API_KEY or API_KEY_PLACEHOLDER
+def _resolve_model(model: str | None) -> str:
+    """Resolve a model alias (e.g. 'devstral') to the full GGUF filename."""
+    if not model:
+        model = cfg("DEFAULT_MODEL", "devstral")
+    aliases = {
+        "devstral": cfg("DEVSTRAL_MODEL",
+                        "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf"),
+        "qwen-coder": cfg("QWEN_CODER_MODEL",
+                          "Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"),
+        "qwen3-next": cfg("QWEN3_NEXT_MODEL",
+                          "Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"),
+    }
+    return aliases.get(model, model)
+
+
+MODEL_ALIASES = ("devstral", "qwen-coder", "qwen3-next")
 
 
 def _mcp_gateway_url() -> str | None:
@@ -85,44 +102,24 @@ def _mcp_gateway_url() -> str | None:
     return f"{url}/mcp"
 
 
+def _mcp_gateway_sse_url() -> str | None:
+    """MCP gateway SSE URL for clients that use SSE transport (e.g. Qwen)."""
+    url = _mcp_gateway_url()
+    if not url:
+        return None
+    return url.replace("/mcp", "/sse")
+
+
 # =============================================================================
-# COMMAND BUILDERS — one per agent profile
+# COMMAND BUILDERS — one per CLI tool
 # =============================================================================
 # Each returns a CLI args list. The Docker image's entrypoint handles the rest.
 # max_turns=0 means "don't pass --max-turns" (agent uses its default).
+# model=None means "use DEFAULT_MODEL from .env" (resolved by _resolve_model).
 
-def _build_goose_cmd(task: str, max_turns: int = 0) -> list[str]:
-    cmd = [
-        "run", "--provider", "openai", "--model", _goose_model(),
-        "--with-builtin", "developer",
-        "--no-session", "--no-profile",
-        "--text", task,
-    ]
-    gw = _mcp_gateway_url()
-    if gw:
-        cmd.extend(["--with-streamable-http-extension", gw])
-    if max_turns > 0:
-        cmd.extend(["--max-turns", str(max_turns)])
-    return cmd
-
-
-def _build_goose_reviewer_cmd(task: str, max_turns: int = 0) -> list[str]:
-    """Reviewer: MCP gateway only, no --with-builtin developer."""
-    cmd = [
-        "run", "--provider", "openai", "--model", _goose_model(),
-        "--no-session", "--no-profile", "--quiet",
-        "--text", task,
-    ]
-    gw = _mcp_gateway_url()
-    if gw:
-        cmd.extend(["--with-streamable-http-extension", gw])
-    if max_turns > 0:
-        cmd.extend(["--max-turns", str(max_turns)])
-    return cmd
-
-
-def _build_goose_devstral_cmd(task: str, max_turns: int = 0) -> list[str]:
-    model = cfg("DEVSTRAL_MODEL", "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf")
+def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Goose developer — full coding agent with local file tools + MCP gateway."""
+    model = _resolve_model(model)
     cmd = [
         "run", "--provider", "openai", "--model", model,
         "--with-builtin", "developer",
@@ -137,28 +134,40 @@ def _build_goose_devstral_cmd(task: str, max_turns: int = 0) -> list[str]:
     return cmd
 
 
-def _build_qwen_cmd(task: str, max_turns: int = 0) -> list[str]:
-    """Qwen Code CLI with local LLM via OpenAI-compatible endpoint."""
-    return ["qwen", "-y", "--auth-type", "openai", "-p", task]
-
-
-def _build_qwen_cloud_cmd(task: str, max_turns: int = 0) -> list[str]:
-    """Qwen Code CLI with qwen.ai cloud. Needs DASHSCOPE_API_KEY."""
-    return ["qwen", "-y", "--auth-type", "qwen-oauth", "-p", task]
-
-
-def _build_qwen_devstral_cmd(task: str, max_turns: int = 0) -> list[str]:
-    """Qwen Code CLI with devstral via OpenAI-compatible endpoint."""
-    return ["qwen", "-y", "--auth-type", "openai", "-p", task]
+def _build_goose_reviewer_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Goose reviewer — MCP gateway only, no --with-builtin developer."""
+    model = _resolve_model(model)
+    cmd = [
+        "run", "--provider", "openai", "--model", model,
+        "--no-session", "--no-profile", "--quiet",
+        "--text", task,
+    ]
+    gw = _mcp_gateway_url()
+    if gw:
+        cmd.extend(["--with-streamable-http-extension", gw])
+    if max_turns > 0:
+        cmd.extend(["--max-turns", str(max_turns)])
+    return cmd
 
 
 def _vibe_config_script() -> str:
     """Shell snippet that writes ~/.vibe/config.toml from env vars.
 
-    Expects VIBE_API_BASE, VIBE_MODEL_NAME and (optionally) VIBE_API_KEY
+    Configures both the LLM provider and the MCP gateway server.
+    Expects VIBE_API_BASE, VIBE_MODEL_NAME and (optionally) VIBE_KEY_VAR
     to be set in the container environment.
     """
-    return """
+    gw = _mcp_gateway_url()
+    mcp_block = ""
+    if gw:
+        mcp_block = f"""
+[[mcp_servers]]
+name = "mcp-gateway"
+transport = "streamable-http"
+url = "{gw}"
+"""
+
+    return f"""
 mkdir -p ~/.vibe
 cat > ~/.vibe/config.toml << 'TOMLEOF'
 active_model = "local"
@@ -176,19 +185,19 @@ backend = "generic"
 name = "__VIBE_MODEL_NAME__"
 provider = "custom"
 alias = "local"
-TOMLEOF
-sed -i "s|__VIBE_API_BASE__|${VIBE_API_BASE}|" ~/.vibe/config.toml
-sed -i "s|__VIBE_MODEL_NAME__|${VIBE_MODEL_NAME}|" ~/.vibe/config.toml
-sed -i "s|__VIBE_KEY_VAR__|${VIBE_KEY_VAR:-}|" ~/.vibe/config.toml
+{mcp_block}TOMLEOF
+sed -i "s|__VIBE_API_BASE__|${{VIBE_API_BASE}}|" ~/.vibe/config.toml
+sed -i "s|__VIBE_MODEL_NAME__|${{VIBE_MODEL_NAME}}|" ~/.vibe/config.toml
+sed -i "s|__VIBE_KEY_VAR__|${{VIBE_KEY_VAR:-}}|" ~/.vibe/config.toml
 """
 
 
-def _build_vibe_cmd(task: str, max_turns: int = 0) -> list[str]:
-    """Mistral Vibe CLI — writes config.toml then runs vibe."""
+def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Mistral Vibe CLI — writes config.toml (LLM + MCP) then runs vibe."""
     vibe_args = [
         "-p", task,
         "--workdir", "/workspace",
-        "--enabled-tools", r"re:^(bash|grep|read_file|search_replace|write_file|task|todo|mcp-gateway_gitea_create_issue|mcp-gateway_gitea_create_pr)",
+        "--enabled-tools", r"re:^(bash|grep|read_file|search_replace|write_file|task|todo|mcp-gateway_.*)",
         "--output", "json",
     ]
     if max_turns > 0:
@@ -198,40 +207,51 @@ def _build_vibe_cmd(task: str, max_turns: int = 0) -> list[str]:
     return ["/bin/bash", "-c", _vibe_config_script() + vibe_cmd]
 
 
-def _build_kimi_cmd(task: str, max_turns: int = 0) -> list[str]:
-    cmd = [
-        "kimi",
-        "-p", task,
-        "--print",
-        "--work-dir", "/workspace",
-    ]
+def _qwen_mcp_script() -> str:
+    """Shell snippet that writes ~/.qwen/settings.json with MCP gateway."""
+    sse_url = _mcp_gateway_sse_url()
+    if not sse_url:
+        return ""
+    return f"""mkdir -p ~/.qwen
+cat > ~/.qwen/settings.json << 'JSONEOF'
+{{"mcpServers": {{"mcp-gateway": {{"url": "{sse_url}"}}}}}}
+JSONEOF
+"""
+
+
+def _build_qwen_local_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Qwen Code CLI with local LLM + MCP gateway."""
+    qwen_cmd = f"qwen -y --auth-type openai -p '{task}'"
+    return ["/bin/bash", "-c", _qwen_mcp_script() + qwen_cmd]
+
+
+def _build_qwen_cloud_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Qwen Code CLI with qwen.ai cloud. Needs DASHSCOPE_API_KEY."""
+    return ["qwen", "-y", "--auth-type", "qwen-oauth", "-p", task]
+
+
+def _build_kimi_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+    """Kimi Code CLI with MCP gateway tools."""
+    gw = _mcp_gateway_url()
+    setup = ""
+    if gw:
+        setup = f"kimi mcp add --transport http mcp-gateway {gw} 2>/dev/null || true\n"
+    kimi_args = f"kimi -p '{task}' --print --work-dir /workspace"
     if max_turns > 0:
-        cmd.extend(["--max-steps-per-turn", str(max_turns)])
-    return cmd
+        kimi_args += f" --max-steps-per-turn {max_turns}"
+    return ["/bin/bash", "-c", setup + kimi_args]
 
 
 # =============================================================================
-# ENVIRONMENT BUILDERS — one per agent family
+# ENVIRONMENT BUILDERS — one per CLI family
 # =============================================================================
+# All local builders accept model=None (resolved to DEFAULT_MODEL).
+# Cloud builders ignore the model parameter.
 
-def _build_goose_env() -> dict:
-    model = _goose_model()
-    host = cfg("GOOSE_LLM_URL", config.GOOSE_LLM_URL).rstrip("/v1").rstrip("/")
-    return {
-        "GOOSE_PROVIDER": "openai",
-        "GOOSE_MODEL": model,
-        "OPENAI_HOST": host,
-        "OPENAI_BASE_PATH": "/v1/chat/completions",
-        "OPENAI_API_KEY": _goose_api_key(),
-        # Prevent goose from calling gpt-4o-mini for planning/titling
-        "GOOSE_PLANNER_PROVIDER": "openai",
-        "GOOSE_PLANNER_MODEL": model,
-    }
-
-
-def _build_goose_devstral_env() -> dict:
-    host = cfg("DEVSTRAL_HOST", "http://host.docker.internal:8083")
-    model = cfg("DEVSTRAL_MODEL", "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf")
+def _build_goose_local_env(model: str | None = None) -> dict:
+    """Goose with local LLM via llamaswap."""
+    host = _llm_host()
+    model = _resolve_model(model)
     return {
         "GOOSE_PROVIDER": "openai",
         "GOOSE_MODEL": model,
@@ -243,32 +263,24 @@ def _build_goose_devstral_env() -> dict:
     }
 
 
-def _build_qwen_env() -> dict:
-    host = cfg("GOOSE_LLM_URL", config.GOOSE_LLM_URL).rstrip("/")
-    model = cfg("QWEN_MODEL", cfg("GOOSE_MODEL", ""))
-    env = {
-        "OPENAI_API_KEY": "not-needed",
-        "OPENAI_BASE_URL": host if host.endswith("/v1") else host + "/v1",
+def _build_vibe_local_env(model: str | None = None) -> dict:
+    """Vibe with local LLM via llamaswap."""
+    host = _llm_host()
+    model = _resolve_model(model)
+    return {
+        "VIBE_API_BASE": host,
+        "VIBE_MODEL_NAME": model,
+        "VIBE_KEY_VAR": "",
+        "VIBE_MAX_TOKENS": "65536",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     }
-    if model:
-        env["OPENAI_MODEL"] = model
-    return env
 
 
-def _build_qwen_cloud_env() -> dict:
-    """Cloud mode — needs DASHSCOPE_API_KEY for headless, or tries OAuth."""
-    env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    key = cfg("DASHSCOPE_API_KEY", "")
-    if key:
-        env["DASHSCOPE_API_KEY"] = key
-    return env
-
-
-def _build_qwen_devstral_env() -> dict:
-    host = cfg("DEVSTRAL_HOST", "http://host.docker.internal:8083")
-    model = cfg("DEVSTRAL_MODEL", "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf")
+def _build_qwen_local_env(model: str | None = None) -> dict:
+    """Qwen Code with local LLM via llamaswap."""
+    host = _llm_host()
+    model = _resolve_model(model)
     return {
         "OPENAI_API_KEY": "not-needed",
         "OPENAI_BASE_URL": host + "/v1",
@@ -278,33 +290,16 @@ def _build_qwen_devstral_env() -> dict:
     }
 
 
-def _build_vibe_env() -> dict:
-    """Vibe with devstral via llama.cpp."""
-    host = cfg("DEVSTRAL_HOST", "http://host.docker.internal:8083")
-    model = cfg("DEVSTRAL_MODEL", "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf")
-    return {
-        "VIBE_API_BASE": host,
-        "VIBE_MODEL_NAME": model,
-        "VIBE_KEY_VAR": "",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1",
-    }
+def _build_qwen_cloud_env(model: str | None = None) -> dict:
+    """Cloud mode — needs DASHSCOPE_API_KEY for headless, or tries OAuth."""
+    env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    key = cfg("DASHSCOPE_API_KEY", "")
+    if key:
+        env["DASHSCOPE_API_KEY"] = key
+    return env
 
 
-def _build_vibe_local_env() -> dict:
-    """Vibe with local LM Studio (same backend as goose/qwen)."""
-    host = cfg("GOOSE_LLM_URL", "http://bluefin:1234/v1").rstrip("/").rstrip("/v1")
-    model = cfg("GOOSE_MODEL", "openai/gpt-oss-20b")
-    return {
-        "VIBE_API_BASE": host,
-        "VIBE_MODEL_NAME": model,
-        "VIBE_KEY_VAR": "",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONUTF8": "1",
-    }
-
-
-def _build_kimi_env() -> dict:
+def _build_kimi_env(model: str | None = None) -> dict:
     """Cloud mode — needs KIMI_API_KEY for headless."""
     env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     key = cfg("KIMI_API_KEY", "")
@@ -314,37 +309,37 @@ def _build_kimi_env() -> dict:
 
 
 # =============================================================================
-# AGENT PROFILES
+# AGENT PROFILES — 1 per CLI, model selected at dispatch time
 # =============================================================================
 
 AGENT_PROFILES = {
     "goose": {
         "label": "Goose Developer",
-        "description": "Full coding agent — local file tools + MCP gateway. Best for coding tasks.",
+        "description": "Goose coding agent — local file tools + MCP gateway.",
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_cmd,
-        "build_env": _build_goose_env,
+        "build_env": _build_goose_local_env,
     },
     "goose-reviewer": {
         "label": "Goose Reviewer",
-        "description": "Review-only — MCP gateway tools only (gitea, search, fetch). No local files.",
+        "description": "Goose review-only — MCP gateway tools (search, fetch, gitea). No local files.",
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_reviewer_cmd,
-        "build_env": _build_goose_env,
+        "build_env": _build_goose_local_env,
     },
-    "goose-devstral": {
-        "label": "Goose + Devstral",
-        "description": "Goose with devstral via llama.cpp. 128k context, tool-call support.",
-        "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
-        "build_cmd": _build_goose_devstral_cmd,
-        "build_env": _build_goose_devstral_env,
+    "vibe": {
+        "label": "Mistral Vibe",
+        "description": "Mistral Vibe CLI — local LLM + MCP gateway tools.",
+        "image": lambda: cfg("VIBE_IMAGE", "mcp-vibe:latest"),
+        "build_cmd": _build_vibe_cmd,
+        "build_env": _build_vibe_local_env,
     },
     "qwen": {
         "label": "Qwen Code",
-        "description": "Qwen Code CLI — local LM Studio. Has file tools + shell.",
+        "description": "Qwen Code CLI — local LLM + MCP gateway tools.",
         "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
-        "build_cmd": _build_qwen_cmd,
-        "build_env": _build_qwen_env,
+        "build_cmd": _build_qwen_local_cmd,
+        "build_env": _build_qwen_local_env,
     },
     "qwen-cloud": {
         "label": "Qwen Code (Cloud)",
@@ -353,30 +348,9 @@ AGENT_PROFILES = {
         "build_cmd": _build_qwen_cloud_cmd,
         "build_env": _build_qwen_cloud_env,
     },
-    "qwen-devstral": {
-        "label": "Qwen + Devstral",
-        "description": "Qwen CLI with devstral via llama.cpp. 128k context.",
-        "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
-        "build_cmd": _build_qwen_devstral_cmd,
-        "build_env": _build_qwen_devstral_env,
-    },
-    "vibe": {
-        "label": "Mistral Vibe",
-        "description": "Mistral Vibe CLI — devstral via local llama.cpp. Mistral's native agent.",
-        "image": lambda: cfg("VIBE_IMAGE", "mcp-vibe:latest"),
-        "build_cmd": _build_vibe_cmd,
-        "build_env": _build_vibe_env,
-    },
-    "vibe-local": {
-        "label": "Vibe + Local LLM",
-        "description": "Mistral Vibe CLI with local LM Studio (same model as goose/qwen).",
-        "image": lambda: cfg("VIBE_IMAGE", "mcp-vibe:latest"),
-        "build_cmd": _build_vibe_cmd,
-        "build_env": _build_vibe_local_env,
-    },
     "kimi": {
         "label": "Kimi Code",
-        "description": "Kimi Code CLI — kimi.com cloud subscription. Has file tools + shell.",
+        "description": "Kimi Code CLI — kimi.com cloud + MCP gateway tools. Needs KIMI_API_KEY.",
         "image": lambda: cfg("KIMI_IMAGE", "mcp-kimi:latest"),
         "build_cmd": _build_kimi_cmd,
         "build_env": _build_kimi_env,
@@ -613,7 +587,8 @@ def _resolve_host_workspace(workspace_path: Path, project: str | None) -> str:
 # =============================================================================
 
 async def run_task(task: str, workspace: str | None = None,
-                   project: str | None = None) -> str:
+                   project: str | None = None,
+                   model: str | None = None) -> str:
     """Run a coding task synchronously. Blocks until completion."""
     if not _DOCKER_AVAILABLE:
         return "Error: docker Python package not installed. Run: pip install docker"
@@ -637,11 +612,11 @@ async def run_task(task: str, workspace: str | None = None,
         output = await asyncio.to_thread(
             client.containers.run,
             image=image,
-            command=profile["build_cmd"](task),
+            command=profile["build_cmd"](task, model=model),
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
-            environment=profile["build_env"](),
+            environment=profile["build_env"](model=model),
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=True, stdout=True, stderr=True, detach=False,
@@ -680,7 +655,8 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
                               workspace: str | None, project: str | None,
                               owner: str | None, repo: str | None,
                               branch: str, max_turns: int,
-                              system_prompt: str | None):
+                              system_prompt: str | None,
+                              model: str | None = None):
     """Background coroutine that runs an agent job."""
     job = _jobs[job_id]
     profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["goose"])
@@ -725,11 +701,11 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
         container = await asyncio.to_thread(
             client.containers.run,
             image=image,
-            command=profile["build_cmd"](full_task, max_turns),
+            command=profile["build_cmd"](full_task, max_turns, model=model),
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
-            environment=profile["build_env"](),
+            environment=profile["build_env"](model=model),
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=False, stdout=True, stderr=True, detach=True,
@@ -786,7 +762,8 @@ async def run_task_async(task: str, workspace: str | None = None,
                          repo: str | None = None,
                          branch: str = "main",
                          max_turns: int = 0,
-                         system_prompt: str | None = None) -> str:
+                         system_prompt: str | None = None,
+                         model: str | None = None) -> str:
     """Start a coding task asynchronously. Returns immediately with a job ID.
 
     Args:
@@ -799,6 +776,7 @@ async def run_task_async(task: str, workspace: str | None = None,
         branch: Git branch to work on (default: main)
         max_turns: Max reasoning steps (0 = agent default)
         system_prompt: Extra instructions prepended to the task
+        model: Model alias or GGUF filename (default: DEFAULT_MODEL env var)
     """
     if agent not in AGENT_PROFILES:
         available = ", ".join(AGENT_PROFILES.keys())
@@ -823,7 +801,7 @@ async def run_task_async(task: str, workspace: str | None = None,
 
     asyncio.create_task(_run_job_background(
         job_id, task, agent, workspace, project, owner, repo,
-        branch, max_turns, system_prompt))
+        branch, max_turns, system_prompt, model=model))
 
     project_info = project or (f"{owner}/{repo}" if owner and repo else "(none)")
     return (
@@ -875,8 +853,13 @@ def check_job(job_id: str) -> str:
 
 
 def list_agent_profiles() -> str:
-    """List available agent profiles."""
+    """List available agent profiles and models."""
     lines = ["Available agent profiles:\n"]
     for name, profile in AGENT_PROFILES.items():
         lines.append(f"  {name}: {profile['description']}")
+    lines.append("\nAvailable models (for local agents):")
+    for alias in MODEL_ALIASES:
+        lines.append(f"  {alias}: {_resolve_model(alias)}")
+    lines.append(f"\nDefault model: {cfg('DEFAULT_MODEL', 'devstral')}")
+    lines.append("LLM endpoint: " + _llm_host())
     return "\n".join(lines)
