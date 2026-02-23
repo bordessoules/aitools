@@ -28,6 +28,7 @@ PLUGIN_MODULES = [
     "knowledge",
     "sandbox",
     "agent",
+    "gitea_plugin",
 ]
 
 

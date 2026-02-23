@@ -370,7 +370,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_cmd,
         "build_env": _build_goose_local_env,
-        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.SANDBOX_PORT],
+        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.SANDBOX_PORT, config.GITEA_PLUGIN_PORT],
     },
     "goose-reviewer": {
         "label": "Goose Reviewer",
@@ -378,7 +378,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_reviewer_cmd,
         "build_env": _build_goose_local_env,
-        "mcp_ports": [config.WEB_PORT, config.KB_PORT],
+        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.GITEA_PLUGIN_PORT],
     },
     "vibe": {
         "label": "Mistral Vibe",

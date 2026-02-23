@@ -34,8 +34,8 @@ RUN mkdir -p cache auth preload workspace
 # Default: headed mode with Xvfb (better bot resistance than headless)
 ENV PLAYWRIGHT_DOCKER_HEADED=true
 
-# Expose gateway ports (8000=all-in-one, 8001-8004=per-plugin)
-EXPOSE 8000 8001 8002 8003 8004
+# Expose gateway ports (8000=all-in-one, 8001-8005=per-plugin)
+EXPOSE 8000 8001 8002 8003 8004 8005
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

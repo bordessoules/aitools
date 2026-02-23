@@ -33,6 +33,7 @@ services:
       - "${KB_PORT:-8002}:8002"
       - "${AGENT_PORT:-8003}:8003"
       - "${SANDBOX_PORT:-8004}:8004"
+      - "${GITEA_PLUGIN_PORT:-8005}:8005"
     environment:
       # Service URLs (internal Docker network)
       - SEARXNG_URL=http://searxng:8080
@@ -103,6 +104,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Workspace for coding agent
       - ./workspace:/app/workspace
+      # Shared auth directory (gateway writes Gitea token here for gitea-mcp)
+      - ./auth:/app/auth
     depends_on:
       searxng:
         condition: service_healthy
@@ -347,6 +350,42 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 3
+
+  # ============================================================================
+  # GITEA MCP - Official Gitea MCP Server (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  # Exposes 60+ Gitea tools via MCP protocol (repos, PRs, issues, files, wiki...).
+  # The gateway writes its API token to ./auth/gitea_token on first boot.
+  # This service waits for that file, then starts in HTTP mode.
+  #
+  # Agents and Chat UI connect to this as an MCP endpoint.
+  # For a lighter alternative, the gateway's built-in gitea_plugin (port 8005)
+  # provides 8 focused git/PR tools without a separate container.
+  gitea-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.gitea-mcp
+    image: mcp-gitea-mcp:latest
+    container_name: mcp-gitea-mcp
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - GITEA_HOST=http://gitea:3000
+      - GITEA_MCP_PORT=8006
+    ports:
+      - "${GITEA_MCP_PORT:-8006}:8006"
+    volumes:
+      - ./auth:/auth:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+      gitea:
+        condition: service_healthy
+    networks:
+      - mcp-network
+    restart: unless-stopped
 
   # ============================================================================
   # LLAMA-SWAP — unified LLM inference proxy (optional, GPU)

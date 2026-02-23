@@ -68,3 +68,6 @@ preload/*
 # Workspace for coding agent (user-specific, only .gitkeep tracked)
 workspace/*
 !workspace/.gitkeep
+
+# Auth directory (Gitea tokens, Playwright state — runtime secrets)
+auth/

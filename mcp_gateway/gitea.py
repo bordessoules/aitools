@@ -18,6 +18,8 @@ First-boot flow:
 """
 
 import asyncio
+import base64
+from pathlib import Path
 
 import httpx
 
@@ -214,16 +216,39 @@ async def _ensure_token(client: httpx.AsyncClient, base: str, user: str, passwor
         data = resp.json()
         _api_token = data.get("sha1") or data.get("token", "")
         log.info("Gitea API token created")
+        _persist_token(_api_token)
         return True
 
     log.error("Failed to create Gitea token: %s %s", resp.status_code, resp.text[:200])
     return False
 
 
+def _persist_token(token: str):
+    """Write API token to shared auth directory for other services (e.g., gitea-mcp)."""
+    try:
+        auth_dir = Path("auth")
+        auth_dir.mkdir(exist_ok=True)
+        (auth_dir / "gitea_token").write_text(token)
+        log.info("Gitea token written to auth/gitea_token")
+    except Exception as e:
+        log.warning("Could not persist Gitea token: %s", e)
+
+
 def _basic_auth(user: str, password: str) -> str:
     """Encode Basic auth header value."""
-    import base64
     return base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+async def _api_request(method: str, path: str, **kwargs) -> httpx.Response:
+    """Authenticated request to Gitea API. Ensures setup first."""
+    if not _api_token:
+        await ensure_setup()
+    headers = kwargs.pop("headers", {})
+    headers["Authorization"] = f"token {_api_token}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        return await getattr(client, method)(
+            f"{_base_url()}/api/v1{path}", headers=headers, **kwargs
+        )
 
 
 async def ensure_repo(name: str) -> str | None:
@@ -314,3 +339,148 @@ async def list_repos() -> list[dict]:
             }
             for r in resp.json()
         ]
+
+
+# =============================================================================
+# GIT OPERATIONS (used by gitea_plugin)
+# =============================================================================
+
+def _owner() -> str:
+    """Default repo owner (admin user)."""
+    return config.GITEA_ADMIN_USER
+
+
+async def list_branches(repo: str) -> list[dict]:
+    """List branches for a repository."""
+    resp = await _api_request("get", f"/repos/{_owner()}/{repo}/branches")
+    if resp.status_code != 200:
+        return []
+    return [
+        {"name": b["name"], "commit_sha": b.get("commit", {}).get("id", "")}
+        for b in resp.json()
+    ]
+
+
+async def get_contents(repo: str, path: str = "", ref: str = "") -> dict | None:
+    """Get file content or directory listing from a repository.
+
+    For files: returns {"type": "file", "name", "content" (decoded), "size"}.
+    For directories: returns {"type": "dir", "entries": [{name, type, size}]}.
+    """
+    params = {}
+    if ref:
+        params["ref"] = ref
+    resp = await _api_request("get", f"/repos/{_owner()}/{repo}/contents/{path}", params=params)
+    if resp.status_code != 200:
+        return None
+
+    data = resp.json()
+
+    # Directory listing (API returns a list)
+    if isinstance(data, list):
+        return {
+            "type": "dir",
+            "entries": [
+                {"name": e["name"], "type": e["type"], "size": e.get("size", 0)}
+                for e in data
+            ],
+        }
+
+    # Single file
+    content = ""
+    if data.get("content"):
+        try:
+            content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        except Exception:
+            content = "[binary file]"
+    return {
+        "type": "file",
+        "name": data.get("name", ""),
+        "size": data.get("size", 0),
+        "content": content,
+    }
+
+
+async def list_pulls(repo: str, state: str = "open") -> list[dict]:
+    """List pull requests for a repository."""
+    resp = await _api_request("get", f"/repos/{_owner()}/{repo}/pulls", params={"state": state, "limit": 50})
+    if resp.status_code != 200:
+        return []
+    return [
+        {
+            "number": p["number"],
+            "title": p["title"],
+            "state": p["state"],
+            "head": p.get("head", {}).get("label", ""),
+            "base": p.get("base", {}).get("label", ""),
+            "user": p.get("user", {}).get("login", ""),
+            "created_at": p.get("created_at", ""),
+        }
+        for p in resp.json()
+    ]
+
+
+async def create_pull(repo: str, title: str, head: str, base_branch: str = "main", body: str = "") -> dict | None:
+    """Create a pull request."""
+    resp = await _api_request("post", f"/repos/{_owner()}/{repo}/pulls", json={
+        "title": title,
+        "head": head,
+        "base": base_branch,
+        "body": body,
+    })
+    if resp.status_code not in (200, 201):
+        log.error("Failed to create PR: %s %s", resp.status_code, resp.text[:200])
+        return None
+    data = resp.json()
+    return {"number": data["number"], "html_url": data.get("html_url", "")}
+
+
+async def get_pull_diff(repo: str, index: int) -> str | None:
+    """Get the diff text for a pull request."""
+    # Gitea returns raw diff when Accept header is set
+    resp = await _api_request(
+        "get", f"/repos/{_owner()}/{repo}/pulls/{index}.diff",
+        headers={"Accept": "text/plain"},
+    )
+    if resp.status_code != 200:
+        return None
+    return resp.text
+
+
+async def create_review(repo: str, index: int, body: str, event: str = "COMMENT") -> dict | None:
+    """Create a review on a pull request.
+
+    event: COMMENT, APPROVE, or REQUEST_CHANGES
+    """
+    resp = await _api_request("post", f"/repos/{_owner()}/{repo}/pulls/{index}/reviews", json={
+        "body": body,
+        "event": event.upper(),
+    })
+    if resp.status_code not in (200, 201):
+        log.error("Failed to create review: %s %s", resp.status_code, resp.text[:200])
+        return None
+    data = resp.json()
+    return {"id": data.get("id"), "state": data.get("state", "")}
+
+
+async def merge_pull(repo: str, index: int, method: str = "merge") -> bool:
+    """Merge a pull request.
+
+    method: merge, rebase, or squash
+
+    Retries on 405 (Gitea returns this when the repo is temporarily locked,
+    e.g. right after a review is created).
+    """
+    for attempt in range(3):
+        resp = await _api_request("post", f"/repos/{_owner()}/{repo}/pulls/{index}/merge", json={
+            "Do": method,
+        })
+        if resp.status_code in (200, 204):
+            return True
+        if resp.status_code == 405 and attempt < 2:
+            log.info("Merge temporarily blocked (405), retrying in 2s...")
+            await asyncio.sleep(2)
+            continue
+        log.error("Failed to merge PR: %s %s", resp.status_code, resp.text[:200])
+        return False
+    return False
