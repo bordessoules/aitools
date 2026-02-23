@@ -312,6 +312,42 @@ def _build_kimi_env(model: str | None = None) -> dict:
 # AGENT PROFILES — 1 per CLI, model selected at dispatch time
 # =============================================================================
 
+
+
+def _apply_llm_overrides(env: dict, llm_url: str | None, api_key: str | None) -> dict:
+    """Override LLM endpoint in agent env dict for runtime routing.
+
+    Allows dispatching agents to any OpenAI-compatible endpoint at runtime,
+    without changing gateway config or restarting.
+    """
+    if not llm_url and not api_key:
+        return env
+
+    env = dict(env)  # Don't mutate original
+
+    if llm_url:
+        host = llm_url.rstrip("/")
+        if host.endswith("/v1"):
+            host = host[:-3]
+        # Override for each agent CLI's env var naming
+        if "OPENAI_HOST" in env:
+            env["OPENAI_HOST"] = host
+        if "OPENAI_BASE_URL" in env:
+            env["OPENAI_BASE_URL"] = host + "/v1"
+        if "VIBE_API_BASE" in env:
+            env["VIBE_API_BASE"] = host
+
+    if api_key:
+        if "OPENAI_API_KEY" in env:
+            env["OPENAI_API_KEY"] = api_key
+        if "DASHSCOPE_API_KEY" in env:
+            env["DASHSCOPE_API_KEY"] = api_key
+        if "KIMI_API_KEY" in env:
+            env["KIMI_API_KEY"] = api_key
+
+    return env
+
+
 AGENT_PROFILES = {
     "goose": {
         "label": "Goose Developer",
@@ -582,81 +618,14 @@ def _resolve_host_workspace(workspace_path: Path, project: str | None) -> str:
     return str(workspace_path.resolve())
 
 
-# =============================================================================
-# MAIN TASK RUNNER (synchronous — blocks until done)
-# =============================================================================
-
-async def run_task(task: str, workspace: str | None = None,
-                   project: str | None = None,
-                   model: str | None = None) -> str:
-    """Run a coding task synchronously. Blocks until completion."""
-    if not _DOCKER_AVAILABLE:
-        return "Error: docker Python package not installed. Run: pip install docker"
-
-    profile = AGENT_PROFILES["goose"]
-    image = profile["image"]()
-    branch = "main"
-
-    workspace_path, clone_url, err = await _setup_workspace(project, workspace, None, None, branch)
-    if err:
-        return f"Error: {err}"
-
-    start = time.monotonic()
-    try:
-        client = await asyncio.to_thread(_get_client)
-        host_workspace = _resolve_host_workspace(workspace_path, project)
-
-        if project and clone_url:
-            await _git_pre_task(client, image, clone_url, branch, host_workspace, workspace_path, project)
-
-        output = await asyncio.to_thread(
-            client.containers.run,
-            image=image,
-            command=profile["build_cmd"](task, model=model),
-            volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
-            working_dir="/workspace",
-            network_mode="host",
-            environment=profile["build_env"](model=model),
-            extra_hosts={"host.docker.internal": "host-gateway"},
-            mem_limit=config.GOOSE_MEMORY_LIMIT,
-            remove=True, stdout=True, stderr=True, detach=False,
-        )
-
-        elapsed = time.monotonic() - start
-        result = output.decode("utf-8", errors="replace")
-        if len(result) > 100_000:
-            result = result[:100_000] + "\n\n... (truncated at 100k chars)"
-
-        git_info = ""
-        if project and clone_url:
-            git_info = "\n" + await _git_post_task(
-                client, image, host_workspace, branch, task, profile["label"])
-
-        project_info = f" | project: {project}" if project else ""
-        return f"{result}\n\n[{profile['label']} completed in {elapsed:.0f}s | workspace: {workspace_path}{project_info}]{git_info}"
-
-    except ContainerError as e:
-        elapsed = time.monotonic() - start
-        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else "No error output"
-        return f"Agent error (exit {e.exit_status}):\n{stderr}\n\n[Failed after {elapsed:.0f}s]"
-    except ImageNotFound:
-        return f"Error: Image '{image}' not found. Run: docker pull {image}"
-    except APIError as e:
-        return f"Error: Docker API error: {e.explanation or str(e)}"
-    except Exception as e:
-        return f"Error: {type(e).__name__}: {e}"
-
-
-# =============================================================================
-# ASYNC JOB RUNNER — fire-and-forget with polling
-# =============================================================================
-
 async def _run_job_background(job_id: str, task: str, agent_name: str,
                               workspace: str | None, project: str | None,
                               owner: str | None, repo: str | None,
                               branch: str, max_turns: int,
                               system_prompt: str | None,
-                              model: str | None = None):
+                              model: str | None = None,
+                              llm_url: str | None = None,
+                              api_key: str | None = None):
     """Background coroutine that runs an agent job."""
     job = _jobs[job_id]
     profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["goose"])
@@ -705,7 +674,7 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
-            environment=profile["build_env"](model=model),
+            environment=_apply_llm_overrides(profile["build_env"](model=model), llm_url, api_key),
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=False, stdout=True, stderr=True, detach=True,
@@ -763,7 +732,9 @@ async def run_task_async(task: str, workspace: str | None = None,
                          branch: str = "main",
                          max_turns: int = 0,
                          system_prompt: str | None = None,
-                         model: str | None = None) -> str:
+                         model: str | None = None,
+                         llm_url: str | None = None,
+                         api_key: str | None = None) -> str:
     """Start a coding task asynchronously. Returns immediately with a job ID.
 
     Args:
@@ -801,7 +772,8 @@ async def run_task_async(task: str, workspace: str | None = None,
 
     asyncio.create_task(_run_job_background(
         job_id, task, agent, workspace, project, owner, repo,
-        branch, max_turns, system_prompt, model=model))
+        branch, max_turns, system_prompt, model=model,
+        llm_url=llm_url, api_key=api_key))
 
     project_info = project or (f"{owner}/{repo}" if owner and repo else "(none)")
     return (

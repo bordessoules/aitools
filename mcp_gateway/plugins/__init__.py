@@ -23,7 +23,6 @@ log = get_logger("plugins")
 PLUGIN_MODULES = [
     "web",
     "knowledge",
-    "processing",
     "sandbox",
     "agent",
 ]

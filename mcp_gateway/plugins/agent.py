@@ -1,11 +1,10 @@
-"""Coding agent plugin — tools for running coding agents in Docker.
+"""Coding agent plugin -- tools for running coding agents in Docker.
 
 Provides tools:
-- run_coding_agent() — synchronous, blocks until done (short tasks)
-- delegate_coding_agent() — async, returns job ID instantly (long tasks)
-- check_coding_job() — poll async job status
-- list_coding_agents() — show available agent profiles
-- list_projects() — show Gitea-backed projects
+- delegate_coding_agent() -- async, returns job ID instantly
+- check_coding_job() -- poll async job status
+- list_coding_agents() -- show available agent profiles
+- list_projects() -- show Gitea-backed projects
 
 Agent profiles are defined in coding_agent.py. All agents run in Docker.
 """
@@ -21,32 +20,12 @@ def register(mcp):
     """Register coding agent tools with FastMCP."""
 
     @mcp.tool()
-    async def run_coding_agent(task: str, workspace: str | None = None,
-                               project: str | None = None) -> str:
-        """
-        Run an autonomous coding agent to complete a programming task.
-        Blocks until completion. Best for short tasks.
-
-        The agent runs in a Docker container and can:
-        - Write and modify code files in the workspace
-        - Execute shell commands
-        - Use MCP gateway tools (search, fetch, knowledge base)
-
-        Args:
-            task: Natural language description of the coding task
-            workspace: Optional workspace directory path (default: ./workspace)
-            project: Optional project name for persistent work (Gitea-backed git repo)
-
-        Returns:
-            Agent output with task results
-        """
-        return await coding_agent.run_task(task, workspace, project=project)
-
-    @mcp.tool()
     async def delegate_coding_agent(
         task: str,
         agent: str = "goose",
         model: str | None = None,
+        llm_url: str | None = None,
+        api_key: str | None = None,
         project: str | None = None,
         owner: str | None = None,
         repo: str | None = None,
@@ -68,6 +47,9 @@ def register(mcp):
             agent: Agent profile (default: "goose"). See list_coding_agents()
             model: Model alias or GGUF filename (default: DEFAULT_MODEL env var).
                    Aliases: "devstral", "qwen-coder", "qwen3-next"
+            llm_url: Optional LLM endpoint URL override (any OpenAI-compatible endpoint).
+                     Examples: "http://bluefin:8080", "https://openrouter.ai/api/v1"
+            api_key: Optional API key for the LLM endpoint (needed for cloud providers)
             project: Gitea project name (auto-creates repo if needed)
             owner: Gitea repo owner (alternative to project, for existing repos)
             repo: Gitea repo name (used with owner)
@@ -83,7 +65,7 @@ def register(mcp):
             task, workspace=workspace, project=project, agent=agent,
             owner=owner, repo=repo, branch=branch,
             max_turns=max_turns, system_prompt=system_prompt,
-            model=model)
+            model=model, llm_url=llm_url, api_key=api_key)
 
     @mcp.tool()
     async def check_coding_job(job_id: str) -> str:

@@ -235,7 +235,6 @@ GITHUB_PATTERNS = [
 
 ENABLE_WEB_TOOLS = os.getenv("ENABLE_WEB_TOOLS", "true").lower() == "true"
 ENABLE_KB_TOOLS = os.getenv("ENABLE_KB_TOOLS", "true").lower() == "true"
-ENABLE_PROCESSING_TOOLS = os.getenv("ENABLE_PROCESSING_TOOLS", "true").lower() == "true"
 ENABLE_CODE_EXECUTION = os.getenv("ENABLE_CODE_EXECUTION", "false").lower() == "true"
 ENABLE_CODING_AGENT = os.getenv("ENABLE_CODING_AGENT", "false").lower() == "true"
 
@@ -259,22 +258,11 @@ CODE_SANDBOX_MEMORY_LIMIT = os.getenv("CODE_SANDBOX_MEMORY_LIMIT", "256m")
 CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
 
 # =============================================================================
-# PROCESSOR (LLM content processing)
+# CODING AGENT
 # =============================================================================
-# Limits for the process() tool that post-processes fetched content.
-
-PROCESSOR_MAX_CONTENT_CHARS = int(os.getenv("PROCESSOR_MAX_CONTENT_CHARS", "50000"))
-PROCESSOR_MAX_TOKENS = int(os.getenv("PROCESSOR_MAX_TOKENS", "8000"))
-
-# =============================================================================
-# CODING AGENT (pluggable: goose, aider)
-# =============================================================================
-# run_coding_agent() tool — spawns a coding agent in Docker.
-# Agent connects to vLLM for LLM and to our MCP gateway for tools.
+# delegate_coding_agent() tool — spawns a coding agent in Docker.
+# Agent connects to LLM endpoint and to MCP gateway for tools.
 # Requires Docker socket access (same as code execution).
-# Switch agent via CODING_AGENT env var.
-
-CODING_AGENT = os.getenv("CODING_AGENT", "goose")
 
 # Per-agent Docker images
 GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "mcp-goose:latest")
