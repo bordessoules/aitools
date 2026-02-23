@@ -28,6 +28,11 @@ services:
     container_name: mcp-gateway
     ports:
       - "${GATEWAY_PORT:-8000}:8000"
+      # Per-plugin MCP ports (composable tool access)
+      - "${WEB_PORT:-8001}:8001"
+      - "${KB_PORT:-8002}:8002"
+      - "${AGENT_PORT:-8003}:8003"
+      - "${SANDBOX_PORT:-8004}:8004"
     environment:
       # Service URLs (internal Docker network)
       - SEARXNG_URL=http://searxng:8080
@@ -54,7 +59,6 @@ services:
       # Plugin enable flags
       - ENABLE_WEB_TOOLS=${ENABLE_WEB_TOOLS:-true}
       - ENABLE_KB_TOOLS=${ENABLE_KB_TOOLS:-true}
-      - ENABLE_PROCESSING_TOOLS=${ENABLE_PROCESSING_TOOLS:-true}
       - ENABLE_CODE_EXECUTION=${ENABLE_CODE_EXECUTION:-false}
       - ENABLE_CODING_AGENT=${ENABLE_CODING_AGENT:-false}
 
@@ -65,10 +69,8 @@ services:
       - CODE_SANDBOX_MEMORY_LIMIT=${CODE_SANDBOX_MEMORY_LIMIT:-256m}
       - CODE_SANDBOX_CPU_LIMIT=${CODE_SANDBOX_CPU_LIMIT:-1.0}
 
-      # Coding Agent (pluggable: goose, aider)
-      - CODING_AGENT=${CODING_AGENT:-goose}
+      # Coding Agent
       - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
-      # Agent Docker images (built via: docker compose --profile build build)
       - QWEN_IMAGE=${QWEN_IMAGE:-mcp-qwen:latest}
       - VIBE_IMAGE=${VIBE_IMAGE:-mcp-vibe:latest}
       - KIMI_IMAGE=${KIMI_IMAGE:-mcp-kimi:latest}

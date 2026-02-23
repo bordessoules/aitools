@@ -38,6 +38,27 @@ def _env_int(key: str) -> int | None:
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # =============================================================================
+# MULTI-PORT MCP
+# =============================================================================
+# Each plugin gets its own MCP port for composable tool access.
+# Clients connect to the ports they need. Port 8000 keeps all tools (backward compat).
+# Plugin ports map 1:1 to plugin names in PLUGIN_MODULES.
+
+GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8000"))  # All-in-one (backward compat)
+WEB_PORT = int(os.getenv("WEB_PORT", "8001"))           # search, fetch, fetch_section, cache
+KB_PORT = int(os.getenv("KB_PORT", "8002"))              # kb_search, kb_list, kb_remove, add_to_knowledge_base
+AGENT_PORT = int(os.getenv("AGENT_PORT", "8003"))        # delegate_coding_agent, check_coding_job, ...
+SANDBOX_PORT = int(os.getenv("SANDBOX_PORT", "8004"))    # run_code
+
+# Mapping from plugin name to port (used by gateway and agent composition)
+PLUGIN_PORTS = {
+    "web": WEB_PORT,
+    "knowledge": KB_PORT,
+    "agent": AGENT_PORT,
+    "sandbox": SANDBOX_PORT,
+}
+
+# =============================================================================
 # SERVICE URLs
 # =============================================================================
 

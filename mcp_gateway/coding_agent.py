@@ -89,25 +89,29 @@ def _resolve_model(model: str | None) -> str:
 MODEL_ALIASES = ("devstral", "qwen-coder", "qwen3-next")
 
 
-def _mcp_gateway_url() -> str | None:
-    """MCP gateway URL adjusted for network_mode=host containers.
+def _mcp_base_url() -> str:
+    """Base MCP gateway URL adjusted for network_mode=host containers.
 
-    Docker DNS names (e.g. "gateway") don't resolve with network_mode=host,
-    so we replace with localhost. Uses /mcp (Streamable HTTP transport).
+    Docker DNS names (e.g. "gateway") don’t resolve with network_mode=host,
+    so we replace with localhost.
     """
     url = cfg("GOOSE_MCP_GATEWAY_URL", config.GOOSE_MCP_GATEWAY_URL)
     if not url:
-        return None
-    url = url.replace("://gateway:", "://localhost:")
-    return f"{url}/mcp"
+        return "http://localhost:8000"
+    return url.replace("://gateway:", "://localhost:")
 
 
-def _mcp_gateway_sse_url() -> str | None:
-    """MCP gateway SSE URL for clients that use SSE transport (e.g. Qwen)."""
-    url = _mcp_gateway_url()
-    if not url:
-        return None
-    return url.replace("/mcp", "/sse")
+def _mcp_urls(ports: list[int]) -> list[str]:
+    """Build MCP Streamable HTTP endpoint URLs from port list."""
+    base = _mcp_base_url()
+    # Extract host without port: http://localhost:8000 -> http://localhost
+    host = re.sub(r":\d+$", "", base)
+    return [f"{host}:{port}/mcp" for port in ports]
+
+
+def _mcp_sse_urls(ports: list[int]) -> list[str]:
+    """Build MCP SSE endpoint URLs from port list (for clients like Qwen)."""
+    return [url.replace("/mcp", "/sse") for url in _mcp_urls(ports)]
 
 
 # =============================================================================
@@ -117,7 +121,8 @@ def _mcp_gateway_sse_url() -> str | None:
 # max_turns=0 means "don't pass --max-turns" (agent uses its default).
 # model=None means "use DEFAULT_MODEL from .env" (resolved by _resolve_model).
 
-def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                     mcp_ports: list[int] | None = None) -> list[str]:
     """Goose developer — full coding agent with local file tools + MCP gateway."""
     model = _resolve_model(model)
     cmd = [
@@ -126,15 +131,15 @@ def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None) ->
         "--no-session", "--no-profile",
         "--text", task,
     ]
-    gw = _mcp_gateway_url()
-    if gw:
-        cmd.extend(["--with-streamable-http-extension", gw])
+    for url in _mcp_urls(mcp_ports or [config.GATEWAY_PORT]):
+        cmd.extend(["--with-streamable-http-extension", url])
     if max_turns > 0:
         cmd.extend(["--max-turns", str(max_turns)])
     return cmd
 
 
-def _build_goose_reviewer_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_goose_reviewer_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                              mcp_ports: list[int] | None = None) -> list[str]:
     """Goose reviewer — MCP gateway only, no --with-builtin developer."""
     model = _resolve_model(model)
     cmd = [
@@ -142,29 +147,29 @@ def _build_goose_reviewer_cmd(task: str, max_turns: int = 0, model: str | None =
         "--no-session", "--no-profile", "--quiet",
         "--text", task,
     ]
-    gw = _mcp_gateway_url()
-    if gw:
-        cmd.extend(["--with-streamable-http-extension", gw])
+    for url in _mcp_urls(mcp_ports or [config.GATEWAY_PORT]):
+        cmd.extend(["--with-streamable-http-extension", url])
     if max_turns > 0:
         cmd.extend(["--max-turns", str(max_turns)])
     return cmd
 
 
-def _vibe_config_script() -> str:
+def _vibe_config_script(mcp_ports: list[int] | None = None) -> str:
     """Shell snippet that writes ~/.vibe/config.toml from env vars.
 
-    Configures both the LLM provider and the MCP gateway server.
+    Configures both the LLM provider and the MCP gateway server(s).
     Expects VIBE_API_BASE, VIBE_MODEL_NAME and (optionally) VIBE_KEY_VAR
     to be set in the container environment.
     """
-    gw = _mcp_gateway_url()
+    urls = _mcp_urls(mcp_ports or [config.GATEWAY_PORT])
     mcp_block = ""
-    if gw:
-        mcp_block = f"""
+    for i, url in enumerate(urls):
+        name = f"mcp-gateway-{i}" if len(urls) > 1 else "mcp-gateway"
+        mcp_block += f"""
 [[mcp_servers]]
-name = "mcp-gateway"
+name = "{name}"
 transport = "streamable-http"
-url = "{gw}"
+url = "{url}"
 """
 
     return f"""
@@ -192,7 +197,8 @@ sed -i "s|__VIBE_KEY_VAR__|${{VIBE_KEY_VAR:-}}|" ~/.vibe/config.toml
 """
 
 
-def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                    mcp_ports: list[int] | None = None) -> list[str]:
     """Mistral Vibe CLI — writes config.toml (LLM + MCP) then runs vibe."""
     vibe_args = [
         "-p", task,
@@ -204,38 +210,47 @@ def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None) -> 
         vibe_args.extend(["--max-turns", str(max_turns)])
 
     vibe_cmd = "vibe " + " ".join(f"'{a}'" for a in vibe_args)
-    return ["/bin/bash", "-c", _vibe_config_script() + vibe_cmd]
+    return ["/bin/bash", "-c", _vibe_config_script(mcp_ports) + vibe_cmd]
 
 
-def _qwen_mcp_script() -> str:
+def _qwen_mcp_script(mcp_ports: list[int] | None = None) -> str:
     """Shell snippet that writes ~/.qwen/settings.json with MCP gateway."""
-    sse_url = _mcp_gateway_sse_url()
-    if not sse_url:
+    urls = _mcp_sse_urls(mcp_ports or [config.GATEWAY_PORT])
+    if not urls:
         return ""
+    servers = {}
+    for i, url in enumerate(urls):
+        name = f"mcp-gateway-{i}" if len(urls) > 1 else "mcp-gateway"
+        servers[name] = {"url": url}
+    servers_json = json.dumps({"mcpServers": servers})
     return f"""mkdir -p ~/.qwen
 cat > ~/.qwen/settings.json << 'JSONEOF'
-{{"mcpServers": {{"mcp-gateway": {{"url": "{sse_url}"}}}}}}
+{servers_json}
 JSONEOF
 """
 
 
-def _build_qwen_local_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_qwen_local_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                          mcp_ports: list[int] | None = None) -> list[str]:
     """Qwen Code CLI with local LLM + MCP gateway."""
     qwen_cmd = f"qwen -y --auth-type openai -p '{task}'"
-    return ["/bin/bash", "-c", _qwen_mcp_script() + qwen_cmd]
+    return ["/bin/bash", "-c", _qwen_mcp_script(mcp_ports) + qwen_cmd]
 
 
-def _build_qwen_cloud_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_qwen_cloud_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                          mcp_ports: list[int] | None = None) -> list[str]:
     """Qwen Code CLI with qwen.ai cloud. Needs DASHSCOPE_API_KEY."""
     return ["qwen", "-y", "--auth-type", "qwen-oauth", "-p", task]
 
 
-def _build_kimi_cmd(task: str, max_turns: int = 0, model: str | None = None) -> list[str]:
+def _build_kimi_cmd(task: str, max_turns: int = 0, model: str | None = None,
+                    mcp_ports: list[int] | None = None) -> list[str]:
     """Kimi Code CLI with MCP gateway tools."""
-    gw = _mcp_gateway_url()
+    urls = _mcp_urls(mcp_ports or [config.GATEWAY_PORT])
     setup = ""
-    if gw:
-        setup = f"kimi mcp add --transport http mcp-gateway {gw} 2>/dev/null || true\n"
+    for i, url in enumerate(urls):
+        name = f"mcp-gateway-{i}" if len(urls) > 1 else "mcp-gateway"
+        setup += f"kimi mcp add --transport http {name} {url} 2>/dev/null || true\n"
     kimi_args = f"kimi -p '{task}' --print --work-dir /workspace"
     if max_turns > 0:
         kimi_args += f" --max-steps-per-turn {max_turns}"
@@ -355,6 +370,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_cmd,
         "build_env": _build_goose_local_env,
+        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.SANDBOX_PORT],
     },
     "goose-reviewer": {
         "label": "Goose Reviewer",
@@ -362,6 +378,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
         "build_cmd": _build_goose_reviewer_cmd,
         "build_env": _build_goose_local_env,
+        "mcp_ports": [config.WEB_PORT, config.KB_PORT],
     },
     "vibe": {
         "label": "Mistral Vibe",
@@ -369,6 +386,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("VIBE_IMAGE", "mcp-vibe:latest"),
         "build_cmd": _build_vibe_cmd,
         "build_env": _build_vibe_local_env,
+        "mcp_ports": [config.WEB_PORT],
     },
     "qwen": {
         "label": "Qwen Code",
@@ -376,6 +394,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
         "build_cmd": _build_qwen_local_cmd,
         "build_env": _build_qwen_local_env,
+        "mcp_ports": [config.WEB_PORT],
     },
     "qwen-cloud": {
         "label": "Qwen Code (Cloud)",
@@ -383,6 +402,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
         "build_cmd": _build_qwen_cloud_cmd,
         "build_env": _build_qwen_cloud_env,
+        "mcp_ports": [config.WEB_PORT],
     },
     "kimi": {
         "label": "Kimi Code",
@@ -390,6 +410,7 @@ AGENT_PROFILES = {
         "image": lambda: cfg("KIMI_IMAGE", "mcp-kimi:latest"),
         "build_cmd": _build_kimi_cmd,
         "build_env": _build_kimi_env,
+        "mcp_ports": [config.WEB_PORT],
     },
 }
 
@@ -670,7 +691,8 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
         container = await asyncio.to_thread(
             client.containers.run,
             image=image,
-            command=profile["build_cmd"](full_task, max_turns, model=model),
+            command=profile["build_cmd"](full_task, max_turns, model=model,
+                                           mcp_ports=profile.get("mcp_ports")),
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
