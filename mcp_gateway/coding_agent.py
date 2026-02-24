@@ -203,8 +203,8 @@ def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None,
     vibe_args = [
         "-p", task,
         "--workdir", "/workspace",
-        "--enabled-tools", r"re:^(bash|grep|read_file|search_replace|write_file|task|todo|mcp-gateway_.*)",
-        "--output", "json",
+        "--enabled-tools", r"re:^(bash|grep|read_file|search_replace|write_file|task|todo|mcp-gateway.*_.*)",
+        "--output", "streaming",
     ]
     if max_turns > 0:
         vibe_args.extend(["--max-turns", str(max_turns)])
@@ -646,7 +646,8 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
                               system_prompt: str | None,
                               model: str | None = None,
                               llm_url: str | None = None,
-                              api_key: str | None = None):
+                              api_key: str | None = None,
+                              mcp_ports_override: list[int] | None = None):
     """Background coroutine that runs an agent job."""
     job = _jobs[job_id]
     profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["goose"])
@@ -692,7 +693,7 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
             client.containers.run,
             image=image,
             command=profile["build_cmd"](full_task, max_turns, model=model,
-                                           mcp_ports=profile.get("mcp_ports")),
+                                           mcp_ports=mcp_ports_override or profile.get("mcp_ports")),
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
@@ -804,6 +805,159 @@ async def run_task_async(task: str, workspace: str | None = None,
         f"Project: {project_info}\n"
         f"Branch: {branch}\n"
         f"\nUse check_coding_job('{job_id}') to poll for results."
+    )
+
+
+async def run_task_and_wait(
+    task: str,
+    agent: str = "goose",
+    model: str | None = None,
+    mcp_ports_override: list[int] | None = None,
+    project: str | None = None,
+    branch: str = "main",
+    max_turns: int = 0,
+    system_prompt: str | None = None,
+    timeout: int = 0,
+) -> str:
+    """Start a coding task and wait for completion. Returns the result directly.
+
+    Unlike run_task_async (fire-and-forget + polling), this holds the
+    connection open and returns when the agent finishes or times out.
+    The caller makes one call and gets one result — no polling needed.
+
+    Args:
+        task: Natural language task description
+        agent: Agent profile name (key in AGENT_PROFILES)
+        model: Model alias (resolved by _resolve_model)
+        mcp_ports_override: Override MCP ports (replaces profile default)
+        project: Gitea project name (auto-creates repo if needed)
+        branch: Git branch to work on
+        max_turns: Max reasoning steps (0 = agent default)
+        system_prompt: Extra instructions prepended to the task
+        timeout: Max seconds to wait (0 = use AGENT_TIMEOUT from config)
+    """
+    if agent not in AGENT_PROFILES:
+        available = ", ".join(AGENT_PROFILES.keys())
+        return f"Error: Unknown agent '{agent}'. Available: {available}"
+
+    max_wait = timeout or config.AGENT_TIMEOUT
+
+    job_id = uuid.uuid4().hex[:12]
+    profile = AGENT_PROFILES[agent]
+
+    _jobs[job_id] = {
+        "status": "starting",
+        "agent": agent,
+        "agent_label": profile["label"],
+        "task": task[:200],
+        "project": project,
+        "branch": branch,
+        "started_at": time.monotonic(),
+        "finished_at": None,
+        "exit_code": None,
+        "output": None,
+    }
+    _save_job(job_id)
+
+    # Start the background job
+    asyncio.create_task(_run_job_background(
+        job_id, task, agent, None, project, None, None,
+        branch, max_turns, system_prompt, model=model,
+        mcp_ports_override=mcp_ports_override))
+
+    # Hold connection — poll internally until done or timeout
+    start = time.monotonic()
+    while time.monotonic() - start < max_wait:
+        await asyncio.sleep(2)
+        job = _jobs.get(job_id, {})
+        if job.get("status") in ("completed", "failed", "crashed"):
+            return job.get("output", "(no output)")
+
+    # Timeout — job may still be running in background
+    return (
+        f"Agent timed out after {max_wait}s. The job may still be running.\n"
+        f"Task: {task[:200]}"
+    )
+
+
+def _await_backoff(count: int) -> int:
+    """Progressive backoff: 35s, 40s, 45s, 50s... capped at 60s."""
+    return min(35 + (count * 5), 60)
+
+
+async def run_task_fire(
+    task: str,
+    agent: str = "goose",
+    model: str | None = None,
+    mcp_ports_override: list[int] | None = None,
+    project: str | None = None,
+    branch: str = "main",
+    max_turns: int = 0,
+    system_prompt: str | None = None,
+) -> str:
+    """Start a coding task in the background. Returns job_id immediately."""
+    if agent not in AGENT_PROFILES:
+        raise ValueError(f"Unknown agent '{agent}'. Available: {', '.join(AGENT_PROFILES)}")
+
+    job_id = uuid.uuid4().hex[:12]
+    profile = AGENT_PROFILES[agent]
+
+    _jobs[job_id] = {
+        "status": "starting",
+        "agent": agent,
+        "agent_label": profile["label"],
+        "task": task[:200],
+        "project": project,
+        "branch": branch,
+        "started_at": time.monotonic(),
+        "finished_at": None,
+        "exit_code": None,
+        "output": None,
+        "await_count": 0,
+    }
+    _save_job(job_id)
+
+    asyncio.create_task(_run_job_background(
+        job_id, task, agent, None, project, None, None,
+        branch, max_turns, system_prompt, model=model,
+        mcp_ports_override=mcp_ports_override))
+
+    return job_id
+
+
+async def await_agent(job_id: str) -> str:
+    """Wait for an agent job with progressive backoff.
+
+    First call waits 35s, second 40s, third 45s, etc. (capped at 60s).
+    Returns the result if the agent finishes during the wait, otherwise
+    returns a status update prompting the caller to try again.
+    """
+    if job_id not in _jobs:
+        return check_job(job_id)
+
+    job = _jobs[job_id]
+
+    # Already done? Return full result immediately.
+    if job.get("status") in ("completed", "failed", "crashed"):
+        return check_job(job_id)
+
+    # Progressive backoff
+    count = job.get("await_count", 0)
+    wait_secs = _await_backoff(count)
+    job["await_count"] = count + 1
+    _save_job(job_id)
+
+    # Hold connection for wait_secs, checking every 2s
+    deadline = time.monotonic() + wait_secs
+    while time.monotonic() < deadline:
+        await asyncio.sleep(2)
+        if job.get("status") in ("completed", "failed", "crashed"):
+            return check_job(job_id)
+
+    elapsed = int(time.monotonic() - job["started_at"])
+    return (
+        f"Agent still working ({elapsed}s elapsed). "
+        f"Call await_agent('{job_id}') again to check."
     )
 
 
