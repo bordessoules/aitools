@@ -214,6 +214,13 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
+# ROLES CONFIG
+# =============================================================================
+# Role definitions for delegate_to_agent() — maps role names to agent profiles.
+
+ROLES_FILE = Path(os.getenv("ROLES_FILE", "./config/roles.yaml"))
+
+# =============================================================================
 # PRELOAD FOLDER
 # =============================================================================
 # Drop files (PDFs, docs, etc.) into this folder and they'll be indexed into
@@ -293,7 +300,7 @@ QWEN_IMAGE = os.getenv("QWEN_IMAGE", "mcp-qwen:latest")
 VIBE_IMAGE = os.getenv("VIBE_IMAGE", "mcp-vibe:latest")
 KIMI_IMAGE = os.getenv("KIMI_IMAGE", "mcp-kimi:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
-GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
+AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "600"))
 GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")
 GOOSE_MODEL = os.getenv("GOOSE_MODEL", "")  # Falls back to VISION_MODEL if empty
 GOOSE_API_KEY = os.getenv("GOOSE_API_KEY", "")  # Falls back to VISION_API_KEY if empty

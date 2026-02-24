@@ -25,8 +25,9 @@ RUN uv pip install --system -r requirements.txt && \
 # Install Chromium for web extraction (Docker Playwright)
 RUN playwright install chromium --with-deps
 
-# Copy application code
+# Copy application code and config
 COPY mcp_gateway/ ./mcp_gateway/
+COPY config/ ./config/
 
 # Create cache, auth, and preload directories
 RUN mkdir -p cache auth preload workspace
