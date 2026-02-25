@@ -61,8 +61,9 @@ def reload_roles():
 
 
 def get_role(name: str) -> dict | None:
-    """Get a role definition by name. Returns None if not found."""
-    return _load_roles().get(name)
+    """Get a role definition by name. Re-reads YAML each time for hot-reload."""
+    reload_roles()
+    return _roles_cache.get(name)
 
 
 def resolve_mcp_ports(role: dict) -> list[int]:
