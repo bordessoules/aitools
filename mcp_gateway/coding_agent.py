@@ -18,6 +18,7 @@ import os
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
@@ -102,22 +103,39 @@ def _build_reviewer_command(task: str) -> list[str]:
 
 
 # =============================================================================
-# AGENT PROFILES
+# AGENT PROFILES — single registry for all agent metadata
 # =============================================================================
-# Each profile defines how Goose runs: which tools, which command builder.
 
 AGENT_PROFILES = {
     "goose": {
         "label": "Goose Developer",
         "description": "Full coding agent — has local file tools (shell, write_file) + MCP gateway. Best for coding tasks.",
         "build_command": _build_command,
+        "git_author": "Goose Agent",
+        "git_email": "goose@mcp-gateway",
     },
     "goose-reviewer": {
         "label": "Goose Reviewer",
         "description": "Review-only agent — MCP gateway tools only (gitea, search, fetch). No local file access. Best for code reviews and PR analysis.",
         "build_command": _build_reviewer_command,
+        "git_author": "Goose Reviewer",
+        "git_email": "goose-reviewer@mcp-gateway",
     },
 }
+
+
+def get_active_profile() -> tuple[str, dict]:
+    """Get the active agent profile from CODING_AGENT config.
+
+    Returns (name, profile) tuple.
+    """
+    name = config.CODING_AGENT.lower()
+    profile = AGENT_PROFILES.get(name)
+    if profile is None:
+        supported = ", ".join(AGENT_PROFILES.keys())
+        log.warning("Unknown CODING_AGENT '%s' (supported: %s), falling back to goose", name, supported)
+        return "goose", AGENT_PROFILES["goose"]
+    return name, profile
 
 
 # =============================================================================
@@ -270,7 +288,89 @@ async def _git_post_task(client, host_workspace: str, task: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main task runner
+# Shared task setup — used by both sync and async runners
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskSetup:
+    """All the data needed to run a container, computed once."""
+    workspace_path: Path
+    host_workspace: str
+    clone_url: str | None
+    volumes: dict
+    environment: dict
+    client: object  # docker.DockerClient
+    project: str | None
+
+
+async def _prepare_task(workspace: str | None = None,
+                        project: str | None = None) -> TaskSetup:
+    """Prepare workspace, Gitea repo, Docker volumes, and environment.
+
+    Shared between run_task() and _run_job_background() to avoid duplication.
+    Raises on errors (caller decides how to surface them).
+    """
+    if not _DOCKER_AVAILABLE:
+        raise RuntimeError("docker Python package not installed. Run: pip install docker")
+
+    workspace_path = Path(workspace) if workspace else config.GOOSE_WORKSPACE
+
+    # Project mode: validate name, set up Gitea repo, use subdirectory
+    clone_url = None
+    if project:
+        err = _validate_project_name(project)
+        if err:
+            raise ValueError(err)
+
+        workspace_path = config.GOOSE_WORKSPACE / project
+
+        from . import gitea
+        clone_url = await gitea.ensure_repo(project)
+        if not clone_url:
+            raise RuntimeError(f"Could not create/access Gitea repo for project '{project}'. Is Gitea running?")
+
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    # Make workspace writable by Goose (runs as UID 1000 'goose' user)
+    os.chmod(workspace_path, 0o777)
+
+    client = await asyncio.to_thread(_get_client)
+
+    # Docker-in-Docker path resolution:
+    # When running inside Docker, volume mounts for sibling containers must
+    # use host paths, not container paths. Auto-detect by inspecting our mounts.
+    host_workspace = _get_host_workspace_path()
+    if host_workspace:
+        log.debug("Docker-in-Docker mode: host workspace = %s", host_workspace)
+        if project:
+            host_workspace = f"{host_workspace}/{project}"
+    else:
+        host_workspace = str(workspace_path.resolve())
+
+    volumes = {
+        host_workspace: {"bind": "/workspace", "mode": "rw"},
+    }
+
+    environment = {
+        "GOOSE_PROVIDER": "openai",
+        "GOOSE_MODEL": _goose_model(),
+        "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
+        "OPENAI_BASE_PATH": "/v1/chat/completions",
+        "OPENAI_API_KEY": _goose_api_key(),
+    }
+
+    return TaskSetup(
+        workspace_path=workspace_path,
+        host_workspace=host_workspace,
+        clone_url=clone_url,
+        volumes=volumes,
+        environment=environment,
+        client=client,
+        project=project,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main task runner (synchronous — blocks until done)
 # ---------------------------------------------------------------------------
 
 async def run_task(task: str, workspace: str | None = None, project: str | None = None) -> str:
@@ -284,73 +384,28 @@ async def run_task(task: str, workspace: str | None = None, project: str | None 
     Returns:
         Goose output with task results, or error message
     """
-    if not _DOCKER_AVAILABLE:
-        return "Error: docker Python package not installed. Run: pip install docker"
+    try:
+        setup = await _prepare_task(workspace, project)
+    except Exception as e:
+        return f"Error: {e}"
 
-    workspace_path = Path(workspace) if workspace else config.GOOSE_WORKSPACE
-
-    # Project mode: validate name, set up Gitea repo, use subdirectory
-    clone_url = None
-    if project:
-        err = _validate_project_name(project)
-        if err:
-            return f"Error: {err}"
-
-        workspace_path = config.GOOSE_WORKSPACE / project
-
-        try:
-            from . import gitea
-            clone_url = await gitea.ensure_repo(project)
-            if not clone_url:
-                return f"Error: Could not create/access Gitea repo for project '{project}'. Is Gitea running?"
-        except Exception as e:
-            log.error("Gitea repo setup failed for '%s': %s", project, e)
-            return f"Error setting up project repo: {e}"
-
-    workspace_path.mkdir(parents=True, exist_ok=True)
-    # Make workspace writable by Goose (runs as UID 1000 'goose' user)
-    os.chmod(workspace_path, 0o777)
-
-    log.info("Running Goose task: %s (workspace: %s, project: %s)", task[:100], workspace_path, project)
+    log.info("Running Goose task: %s (workspace: %s, project: %s)", task[:100], setup.workspace_path, project)
     start = time.monotonic()
 
     try:
-        client = await asyncio.to_thread(_get_client)
-
-        # Docker-in-Docker path resolution:
-        # When running inside Docker, volume mounts for sibling containers must
-        # use host paths, not container paths. Auto-detect by inspecting our mounts.
-        host_workspace = _get_host_workspace_path()
-        if host_workspace:
-            log.debug("Docker-in-Docker mode: host workspace = %s", host_workspace)
-            if project:
-                host_workspace = f"{host_workspace}/{project}"
-        else:
-            host_workspace = str(workspace_path.resolve())
-
-        volumes = {
-            host_workspace: {"bind": "/workspace", "mode": "rw"},
-        }
-
         # Pre-task: clone or pull if project mode
-        if project and clone_url:
-            await _git_pre_task(client, clone_url, host_workspace, workspace_path, project)
+        if setup.project and setup.clone_url:
+            await _git_pre_task(setup.client, setup.clone_url, setup.host_workspace, setup.workspace_path, setup.project)
 
         # All config via env vars + CLI flags — no config file needed
         output = await asyncio.to_thread(
-            client.containers.run,
+            setup.client.containers.run,
             image=config.GOOSE_IMAGE,
             command=_build_command(task),
-            volumes=volumes,
+            volumes=setup.volumes,
             working_dir="/workspace",
             network_mode="host",
-            environment={
-                "GOOSE_PROVIDER": "openai",
-                "GOOSE_MODEL": _goose_model(),
-                "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
-                "OPENAI_BASE_PATH": "/v1/chat/completions",
-                "OPENAI_API_KEY": _goose_api_key(),
-            },
+            environment=setup.environment,
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=True,
@@ -367,13 +422,13 @@ async def run_task(task: str, workspace: str | None = None, project: str | None 
 
         # Post-task: commit and push if project mode
         git_info = ""
-        if project and clone_url:
-            git_info = "\n" + await _git_post_task(client, host_workspace, task)
+        if setup.project and setup.clone_url:
+            git_info = "\n" + await _git_post_task(setup.client, setup.host_workspace, task)
 
         log.info("Goose task completed in %.1fs (%d chars output)", elapsed, len(result))
 
         project_info = f" | project: {project}" if project else ""
-        return f"{result}\n\n[Goose completed in {elapsed:.0f}s | workspace: {workspace_path}{project_info}]{git_info}"
+        return f"{result}\n\n[Goose completed in {elapsed:.0f}s | workspace: {setup.workspace_path}{project_info}]{git_info}"
 
     except ContainerError as e:
         elapsed = time.monotonic() - start
@@ -409,62 +464,22 @@ async def _run_job_background(job_id: str, task: str, workspace: str | None,
         profile = AGENT_PROFILES.get(profile_name, AGENT_PROFILES["goose"])
         job["status"] = "running"
 
-        if not _DOCKER_AVAILABLE:
-            raise RuntimeError("docker Python package not installed")
-
-        workspace_path = Path(workspace) if workspace else config.GOOSE_WORKSPACE
-
-        # Project mode setup
-        clone_url = None
-        if project:
-            err = _validate_project_name(project)
-            if err:
-                raise ValueError(err)
-
-            workspace_path = config.GOOSE_WORKSPACE / project
-
-            from . import gitea
-            clone_url = await gitea.ensure_repo(project)
-            if not clone_url:
-                raise RuntimeError(f"Could not create/access Gitea repo for project '{project}'")
-
-        workspace_path.mkdir(parents=True, exist_ok=True)
-        os.chmod(workspace_path, 0o777)
-
-        client = await asyncio.to_thread(_get_client)
-
-        # Docker-in-Docker path resolution
-        host_workspace = _get_host_workspace_path()
-        if host_workspace:
-            if project:
-                host_workspace = f"{host_workspace}/{project}"
-        else:
-            host_workspace = str(workspace_path.resolve())
-
-        volumes = {
-            host_workspace: {"bind": "/workspace", "mode": "rw"},
-        }
+        setup = await _prepare_task(workspace, project)
 
         # Pre-task: clone or pull if project mode
-        if project and clone_url:
-            await _git_pre_task(client, clone_url, host_workspace, workspace_path, project)
+        if setup.project and setup.clone_url:
+            await _git_pre_task(setup.client, setup.clone_url, setup.host_workspace, setup.workspace_path, setup.project)
 
         # Run container in detached mode (non-blocking)
         build_cmd = profile["build_command"]
         container = await asyncio.to_thread(
-            client.containers.run,
+            setup.client.containers.run,
             image=config.GOOSE_IMAGE,
             command=build_cmd(task),
-            volumes=volumes,
+            volumes=setup.volumes,
             working_dir="/workspace",
             network_mode="host",
-            environment={
-                "GOOSE_PROVIDER": "openai",
-                "GOOSE_MODEL": _goose_model(),
-                "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
-                "OPENAI_BASE_PATH": "/v1/chat/completions",
-                "OPENAI_API_KEY": _goose_api_key(),
-            },
+            environment=setup.environment,
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=False,  # Don't auto-remove — we need to read logs
@@ -494,8 +509,8 @@ async def _run_job_background(job_id: str, task: str, workspace: str | None,
 
         # Post-task: commit and push if project mode
         git_info = ""
-        if project and clone_url:
-            git_info = "\n" + await _git_post_task(client, host_workspace, task)
+        if setup.project and setup.clone_url:
+            git_info = "\n" + await _git_post_task(setup.client, setup.host_workspace, task)
 
         elapsed = time.monotonic() - job["started_at"]
         log.info("Job %s: done in %.0fs (exit=%d)", job_id[:8], elapsed, exit_code)
@@ -503,7 +518,7 @@ async def _run_job_background(job_id: str, task: str, workspace: str | None,
         project_info = f" | project: {project}" if project else ""
         job["status"] = "completed" if exit_code == 0 else "failed"
         job["exit_code"] = exit_code
-        job["output"] = f"{result}\n\n[{profile['label']} completed in {elapsed:.0f}s | workspace: {workspace_path}{project_info}]{git_info}"
+        job["output"] = f"{result}\n\n[{profile['label']} completed in {elapsed:.0f}s | workspace: {setup.workspace_path}{project_info}]{git_info}"
         job["finished_at"] = time.monotonic()
 
     except Exception as e:

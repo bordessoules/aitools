@@ -1,4 +1,4 @@
-"""Coding agent plugin with pluggable agent backends.
+"""Coding agent plugin.
 
 Provides tools:
 - run_coding_agent() — synchronous, blocks until done (good for short tasks)
@@ -8,64 +8,21 @@ Provides tools:
 - list_projects() — show Gitea-backed projects
 
 The active agent is selected via CODING_AGENT env var (default: goose).
-Agent profiles (goose, goose-reviewer) are defined in coding_agent.py.
-
-Adding a new agent backend:
-1. Add an entry to AGENTS dict below
-2. Add its image config var to config.py
-3. Implement command/env builders (or use NotImplementedError placeholder)
+Agent profiles are defined in coding_agent.AGENT_PROFILES.
 """
 
-from .. import config
 from .. import coding_agent
 from .. import gitea
 from ..logger import get_logger
 
 log = get_logger("plugin.agent")
 
-# ---------------------------------------------------------------------------
-# Agent registry — each entry describes how to run an agent in Docker.
-# Currently only goose is fully implemented; others are structural prep.
-# ---------------------------------------------------------------------------
-
-AGENTS = {
-    "goose": {
-        "label": "Goose",
-        "image_config": "GOOSE_IMAGE",
-        "git_author": "Goose Agent",
-        "git_email": "goose@mcp-gateway",
-    },
-    "goose-reviewer": {
-        "label": "Goose Reviewer",
-        "image_config": "GOOSE_IMAGE",
-        "git_author": "Goose Reviewer",
-        "git_email": "goose-reviewer@mcp-gateway",
-    },
-    "aider": {
-        "label": "Aider",
-        "image_config": "AIDER_IMAGE",
-        "git_author": "Aider Agent",
-        "git_email": "aider@mcp-gateway",
-    },
-}
-
-
-def get_active_agent() -> dict:
-    """Get the active agent definition from CODING_AGENT config."""
-    name = config.CODING_AGENT.lower()
-    agent = AGENTS.get(name)
-    if agent is None:
-        supported = ", ".join(AGENTS.keys())
-        log.warning("Unknown CODING_AGENT '%s' (supported: %s), falling back to goose", name, supported)
-        return AGENTS["goose"]
-    return agent
-
 
 def register(mcp):
     """Register coding agent tools with FastMCP."""
 
-    agent = get_active_agent()
-    agent_label = agent["label"]
+    _, active_profile = coding_agent.get_active_profile()
+    agent_label = active_profile["label"]
 
     @mcp.tool()
     async def run_coding_agent(task: str, workspace: str | None = None, project: str | None = None) -> str:
@@ -197,12 +154,12 @@ def register(mcp):
 async def health_checks() -> list[tuple[str, bool]]:
     """Check Docker/agent image and Gitea availability."""
     checks = []
-    agent = get_active_agent()
+    _, active_profile = coding_agent.get_active_profile()
 
     # Coding agent Docker availability
     try:
         if await coding_agent.is_available():
-            checks.append((f"[OK] Coding Agent ({agent['label']})", True))
+            checks.append((f"[OK] Coding Agent ({active_profile['label']})", True))
         else:
             checks.append(("[WARN] Coding Agent: Docker not accessible", False))
     except Exception:

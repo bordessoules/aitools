@@ -191,11 +191,10 @@ async def health_checks() -> list[tuple[str, bool]]:
         checks.append(("[INFO] Vision API not configured - LLM features disabled", False))
 
     # Docling
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
     docling_label = "Docling GPU" if config.USE_DOCLING_GPU else "Docling CPU"
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{docling_url}/health")
+            resp = await client.get(f"{config.docling_url()}/health")
             if resp.status_code == 200:
                 checks.append((f"[OK] {docling_label}", True))
             else:

@@ -47,7 +47,6 @@ except ImportError:
 # Feature flags (set at startup)
 MARKITDOWN_WEB_AVAILABLE = None
 DOCKER_PLAYWRIGHT_AVAILABLE = None
-DOCLING_AVAILABLE = None
 LOCAL_CHROME_AVAILABLE = None
 
 # ---------------------------------------------------------------------------
@@ -125,19 +124,7 @@ async def check_docker_playwright_available() -> bool:
 
 async def check_docling_available() -> bool:
     """Check if Docling is available for web extraction."""
-    global DOCLING_AVAILABLE
-    if DOCLING_AVAILABLE is not None:
-        return DOCLING_AVAILABLE
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{docling_url}/health")
-            DOCLING_AVAILABLE = resp.status_code == 200
-    except Exception:
-        DOCLING_AVAILABLE = False
-    if DOCLING_AVAILABLE:
-        log.info("Docling available at %s", docling_url)
-    return DOCLING_AVAILABLE
+    return await config.check_docling()
 
 # ---------------------------------------------------------------------------
 # Cache helper
@@ -337,11 +324,11 @@ async def _extract_with_docling(url: str) -> str | None:
 
 async def _docling_fetch_url(url: str) -> str | None:
     """Docling fetches and converts a URL directly (fastest path)."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    base = config.docling_url()
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_DOCLING) as client:
             resp = await client.post(
-                f"{docling_url}/v1/convert/source",
+                f"{base}/v1/convert/source",
                 json={
                     "sources": [{
                         "url": url,
@@ -377,12 +364,12 @@ async def _docling_convert_html(html: str) -> str | None:
     Shared by all browser-based HTML sources (Docker Playwright, local Chrome).
     Docling converts HTML to markdown, preserving links, formatting, and images.
     """
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    base = config.docling_url()
 
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_DOCLING) as client:
             resp = await client.post(
-                f"{docling_url}/v1/convert/file",
+                f"{base}/v1/convert/file",
                 files={"files": ("page.html", html.encode("utf-8"), "text/html")},
                 data={"options": '{"to_formats": ["md"], "image_export_mode": "placeholder"}'},
             )

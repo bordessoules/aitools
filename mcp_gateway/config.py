@@ -76,6 +76,30 @@ DOCLING_URL = os.getenv("DOCLING_URL", "http://localhost:5001")
 DOCLING_GPU_URL = os.getenv("DOCLING_GPU_URL", "http://localhost:5001")
 USE_DOCLING_GPU = os.getenv("USE_DOCLING_GPU", "false").lower() == "true"
 
+
+def docling_url() -> str:
+    """Resolved Docling URL (GPU or CPU based on config)."""
+    return DOCLING_GPU_URL if USE_DOCLING_GPU else DOCLING_URL
+
+
+# Cached Docling availability (set on first check, shared across modules)
+_docling_available: bool | None = None
+
+
+async def check_docling() -> bool:
+    """Check if Docling service is available (cached after first check)."""
+    global _docling_available
+    if _docling_available is not None:
+        return _docling_available
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{docling_url()}/health")
+            _docling_available = resp.status_code == 200
+    except Exception:
+        _docling_available = False
+    return _docling_available
+
 # Pipeline mode:
 #   "vlm"      - Sends pages to VISION_API_URL for conversion (best quality)
 #                Falls back to local Granite-258M if no VISION_API_URL
@@ -230,7 +254,6 @@ GITHUB_PATTERNS = [
 
 ENABLE_WEB_TOOLS = os.getenv("ENABLE_WEB_TOOLS", "true").lower() == "true"
 ENABLE_KB_TOOLS = os.getenv("ENABLE_KB_TOOLS", "true").lower() == "true"
-ENABLE_PROCESSING_TOOLS = os.getenv("ENABLE_PROCESSING_TOOLS", "true").lower() == "true"
 ENABLE_CODE_EXECUTION = os.getenv("ENABLE_CODE_EXECUTION", "false").lower() == "true"
 ENABLE_CODING_AGENT = os.getenv("ENABLE_CODING_AGENT", "false").lower() == "true"
 
@@ -252,14 +275,6 @@ CODE_SANDBOX_NODE_IMAGE = os.getenv("CODE_SANDBOX_NODE_IMAGE", "node:20-slim")
 CODE_SANDBOX_TIMEOUT = int(os.getenv("CODE_SANDBOX_TIMEOUT", "30"))
 CODE_SANDBOX_MEMORY_LIMIT = os.getenv("CODE_SANDBOX_MEMORY_LIMIT", "256m")
 CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
-
-# =============================================================================
-# PROCESSOR (LLM content processing)
-# =============================================================================
-# Limits for the process() tool that post-processes fetched content.
-
-PROCESSOR_MAX_CONTENT_CHARS = int(os.getenv("PROCESSOR_MAX_CONTENT_CHARS", "50000"))
-PROCESSOR_MAX_TOKENS = int(os.getenv("PROCESSOR_MAX_TOKENS", "8000"))
 
 # =============================================================================
 # CODING AGENT (pluggable: goose, aider)

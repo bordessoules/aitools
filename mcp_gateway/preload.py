@@ -60,7 +60,7 @@ async def _preload_file(path: Path) -> str | None:
     doc = None
 
     # Try Docling first, then MarkItDown fallback
-    if await documents._check_docling_available():
+    if await config.check_docling():
         doc = await _fetch_with_docling(path, url)
 
     if doc is None and documents.MARKITDOWN_AVAILABLE:
@@ -89,14 +89,14 @@ async def _preload_file(path: Path) -> str | None:
 
 async def _fetch_with_docling(path: Path, url: str) -> documents.Doc | None:
     """Send local file to Docling for conversion."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    base = config.docling_url()
     options = documents._build_docling_options()
 
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_DOCLING) as client:
             with open(path, "rb") as f:
                 resp = await client.post(
-                    f"{docling_url}/v1/convert/file",
+                    f"{base}/v1/convert/file",
                     files={"files": (path.name, f, _mime_type(path))},
                     data={"options": json.dumps(options)},
                 )

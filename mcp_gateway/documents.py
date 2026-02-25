@@ -287,8 +287,8 @@ async def fetch_and_cache(url: str) -> Doc | None:
         return await _fetch_with_markitdown(url)
     
     # Check if Docling is available
-    docling_available = await _check_docling_available()
-    
+    docling_available = await config.check_docling()
+
     # Try Docling first (if available)
     if docling_available:
         doc = await _fetch_with_docling(url)
@@ -305,20 +305,9 @@ async def fetch_and_cache(url: str) -> Doc | None:
     return None
 
 
-async def _check_docling_available() -> bool:
-    """Check if Docling GPU service is available."""
-    try:
-        docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{docling_url}/health")
-            return resp.status_code == 200
-    except Exception:
-        return False
-
-
 async def _fetch_with_docling(url: str) -> Doc | None:
     """Fetch document using Docling service."""
-    docling_url = config.DOCLING_GPU_URL if config.USE_DOCLING_GPU else config.DOCLING_URL
+    url_base = config.docling_url()
 
     # Build options based on pipeline mode (vlm or standard)
     options = _build_docling_options()
@@ -326,7 +315,7 @@ async def _fetch_with_docling(url: str) -> Doc | None:
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_DOCLING) as client:
             resp = await client.post(
-                f"{docling_url}/v1/convert/source",
+                f"{url_base}/v1/convert/source",
                 json={
                     "sources": [{"kind": "http", "url": url}],
                     "options": options
