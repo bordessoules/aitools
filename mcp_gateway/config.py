@@ -49,7 +49,7 @@ WEB_PORT = int(os.getenv("WEB_PORT", "8001"))           # search, fetch, fetch_s
 KB_PORT = int(os.getenv("KB_PORT", "8002"))              # kb_search, kb_list, kb_remove, add_to_knowledge_base
 AGENT_PORT = int(os.getenv("AGENT_PORT", "8003"))        # delegate_coding_agent, check_coding_job, ...
 SANDBOX_PORT = int(os.getenv("SANDBOX_PORT", "8004"))    # run_code
-GITEA_PLUGIN_PORT = int(os.getenv("GITEA_PLUGIN_PORT", "8005"))  # git_list_repos, git_get_contents, ...
+GITEA_PLUGIN_PORT = int(os.getenv("GITEA_PLUGIN_PORT", "8005"))  # git_browse, git_pr
 
 # Mapping from plugin name to port (used by gateway and agent composition)
 PLUGIN_PORTS = {

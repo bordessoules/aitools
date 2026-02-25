@@ -106,6 +106,8 @@ services:
       - ./workspace:/app/workspace
       # Shared auth directory (gateway writes Gitea token here for gitea-mcp)
       - ./auth:/app/auth
+      # Role definitions (hot-reload without rebuild)
+      - ./config/roles.yaml:/app/config/roles.yaml:ro
     depends_on:
       searxng:
         condition: service_healthy
@@ -388,82 +390,11 @@ services:
     restart: unless-stopped
 
   # ============================================================================
-  # LLAMA-SWAP — unified LLM inference proxy (optional, GPU)
+  # LLM INFERENCE (external — see docker-compose.llm.yaml)
   # ============================================================================
-  # Auto-swaps between models on the same GPU based on request model name.
-  # Models: Devstral (128k ctx), Qwen3-Coder (128k ctx) — only one loaded at a time.
-  #
-  # First run:  docker compose --profile llm run --rm llm-model-loader
-  # Then start: docker compose --profile llm up -d llama-swap
-  # Web UI:     http://localhost:8080/ui
-  # Logs:       docker logs -f mcp-llama-swap
-  llama-swap:
-    image: ghcr.io/mostlygeek/llama-swap:cuda
-    container_name: mcp-llama-swap
-    profiles:
-      - llm
-    ports:
-      - "${LLAMASWAP_PORT:-8080}:8080"
-    volumes:
-      - llm-models:/models:ro
-      - ./data/llamaswap-config.yaml:/app/config.yaml:ro
-      - ./data/devstral-chat-template.jinja:/app/devstral-chat-template.jinja:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    networks:
-      - mcp-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 120s
-      retries: 3
-
-  # One-time model loader — copies GGUFs from Windows to Docker volume
-  llm-model-loader:
-    image: busybox
-    profiles:
-      - llm
-    volumes:
-      - ${LLM_MODEL_DIR:-/c/llm_models/byteshape}:/src:ro
-      - ${LLM_MODEL_DIR_2:-/c/llm_models/noctrex}:/src2:ro
-      - llm-models:/dst
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "=== LLM Model Loader ==="
-        for MODEL in \
-          "Devstral-Small-2-24B-Instruct-2512-GGUF/Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf" \
-          "Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"
-        do
-          BASENAME=$$(basename "$$MODEL")
-          if [ -f "/dst/$$BASENAME" ]; then
-            echo "Already loaded: $$BASENAME"
-          else
-            echo "Copying $$BASENAME ..."
-            cp "/src/$$MODEL" "/dst/$$BASENAME"
-            echo "Done: $$BASENAME"
-          fi
-        done
-        for MODEL in \
-          "Qwen3-Coder-Next-REAM-MXFP4_MOE-GGUF/Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"
-        do
-          BASENAME=$$(basename "$$MODEL")
-          if [ -f "/dst/$$BASENAME" ]; then
-            echo "Already loaded: $$BASENAME"
-          else
-            echo "Copying $$BASENAME ..."
-            cp "/src2/$$MODEL" "/dst/$$BASENAME"
-            echo "Done: $$BASENAME"
-          fi
-        done
-        echo "=== All models ready ==="
+  # llama-swap runs separately: docker compose -f docker-compose.llm.yaml up -d
+  # Gateway connects via LLM_HOST env var (default: http://host.docker.internal:8085)
+  # Models auto-download from HuggingFace — see data/llamaswap-config.yaml
 
   # ============================================================================
   # GOOSE IMAGE BUILD (optional, builds custom Goose image with Python/Node)
@@ -526,4 +457,3 @@ volumes:
   chat-ui-data:
   gitea-data:
   gitea-config:
-  llm-models:

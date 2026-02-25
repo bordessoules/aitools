@@ -16,9 +16,13 @@ Agents (1 profile per CLI, model selected at dispatch time):
 - kimi:           Kimi Code CLI via kimi.com cloud API + MCP gateway
 
 Models (auto-swapped by llamaswap):
-- devstral:    Devstral Small 24B
-- qwen-coder:  Qwen3 Coder 30B A3B
-- qwen3-next:  Qwen3 Coder Next 80B MoE
+- devstral:       Devstral Small 24B
+- qwen-coder:     Qwen3 Coder 30B A3B
+- qwen35-code:    Qwen3.5 35B A3B — Thinking · Code (temp 0.6)
+- qwen35:         Qwen3.5 35B A3B — Thinking · General (temp 1.0)
+- qwen35-fast:    Qwen3.5 35B A3B — No-Think · General (temp 0.7)
+- qwen35-reason:  Qwen3.5 35B A3B — No-Think · Reasoning (temp 1.0)
+- qwen3-next:     Qwen3 Coder Next 80B MoE
 """
 
 import asyncio
@@ -80,13 +84,22 @@ def _resolve_model(model: str | None) -> str:
                         "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf"),
         "qwen-coder": cfg("QWEN_CODER_MODEL",
                           "Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"),
+        # Qwen3.5 profiles — same GGUF, different llamaswap profiles (sampling).
+        # Use profile aliases so llamaswap routes to the right config.
+        "qwen35-code": "qwen35-code",
+        "qwen35": cfg("QWEN35_MODEL",
+                      "Qwen3.5-35B-A3B-MXFP4_MOE.gguf"),
+        "qwen35-fast": "qwen35-fast",
+        "qwen35-reason": "qwen35-reason",
         "qwen3-next": cfg("QWEN3_NEXT_MODEL",
                           "Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"),
     }
     return aliases.get(model, model)
 
 
-MODEL_ALIASES = ("devstral", "qwen-coder", "qwen3-next")
+MODEL_ALIASES = ("devstral", "qwen-coder",
+                 "qwen35-code", "qwen35", "qwen35-fast", "qwen35-reason",
+                 "qwen3-next")
 
 
 def _mcp_base_url() -> str:
@@ -209,7 +222,10 @@ def _build_vibe_cmd(task: str, max_turns: int = 0, model: str | None = None,
     if max_turns > 0:
         vibe_args.extend(["--max-turns", str(max_turns)])
 
-    vibe_cmd = "vibe " + " ".join(f"'{a}'" for a in vibe_args)
+    # Escape single quotes in args for shell safety (replace ' with '\'' )
+    def _sq(s: str) -> str:
+        return s.replace("'", "'\\''")
+    vibe_cmd = "vibe " + " ".join(f"'{_sq(a)}'" for a in vibe_args)
     return ["/bin/bash", "-c", _vibe_config_script(mcp_ports) + vibe_cmd]
 
 
@@ -529,17 +545,22 @@ async def _git_pre_task(client, image: str, clone_url: str, branch: str,
     """Clone or pull the project repo before running the agent."""
     git_dir = workspace_path / ".git"
     safe_dir = "git config --global --add safe.directory /workspace && "
+    # Set identity locally (writes to /workspace/.git/config, persists to agent container)
+    git_identity = (
+        "git config user.email 'agent@mcp-gateway.local' && "
+        "git config user.name 'MCP Agent'"
+    )
 
     if git_dir.exists():
         log.info("Pulling latest for '%s' on branch '%s'", project, branch)
-        script = safe_dir + f"cd /workspace && git pull origin {branch} 2>&1 || true"
+        script = safe_dir + f"cd /workspace && {git_identity} && git pull origin {branch} 2>&1 || true"
     else:
         log.info("Cloning '%s' (branch '%s')", project, branch)
         script = (
             f"git clone --depth 50 {clone_url} /tmp/_repo 2>&1 && "
             "cp -a /tmp/_repo/.git /workspace/.git && "
             + safe_dir
-            + "cd /workspace && git checkout -- . 2>/dev/null || true"
+            + f"cd /workspace && {git_identity} && git checkout -- . 2>/dev/null || true"
         )
         # Checkout non-default branch if needed
         if branch not in ("main", "master"):
@@ -556,33 +577,27 @@ async def _git_pre_task(client, image: str, clone_url: str, branch: str,
 
 async def _git_post_task(client, image: str, host_workspace: str,
                          branch: str, task: str, agent_label: str) -> str:
-    """Commit and push changes after agent completes."""
-    safe_task = task[:200].replace('"', "'").replace("\\", "\\\\").replace("$", "")
-    commit_msg = f"{agent_label.lower()}: {safe_task}"
+    """Safety net — push any unpushed commits the agent left behind.
 
+    The agent is told to commit and push its own changes. This is just
+    a fallback in case the agent committed but forgot to push.
+    """
     script = (
         'git config --global --add safe.directory /workspace && '
         'cd /workspace && '
-        f'git config user.name "{agent_label}" && '
-        f'git config user.email "{agent_label.lower().replace(" ", "-")}@mcp-gateway" && '
-        'git add -A && '
-        'if git diff --cached --quiet; then '
-        '  echo "NO_CHANGES"; '
-        'else '
-        f'  git commit -m "{commit_msg}" && '
-        f'  git push -u origin {branch} 2>&1 && '
-        '  echo "COMMITTED"; '
-        'fi'
+        f'git push origin {branch} 2>&1 && '
+        'echo "PUSHED" || echo "NOTHING_TO_PUSH"'
     )
 
     try:
         result = await _run_git_container(client, image, host_workspace, script)
-        if "COMMITTED" in result:
-            return "[Changes committed and pushed to Gitea]"
-        return "[No changes to commit]"
+        if "PUSHED" in result:
+            return "[Changes pushed to Gitea]"
+        log.info("Safety push output: %s", result[:300])
+        return "[Nothing new to push]"
     except Exception as e:
-        log.warning("Git post-task failed: %s", e)
-        return f"[Warning: git commit/push failed: {e}]"
+        log.warning("Safety push failed: %s", e)
+        return f"[Warning: push failed: {e}]"
 
 
 # =============================================================================
@@ -680,7 +695,7 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
             repo_name = project_label or "unknown"
             full_task = (
                 f"Your working directory is a git clone of {repo_name} on branch '{branch}'.\n"
-                f"Edit files directly — changes will be committed and pushed automatically.\n"
+                f"Commit your changes with clear messages and push to origin before finishing.\n"
             )
             if system_prompt:
                 full_task += f"\n{system_prompt}\n"

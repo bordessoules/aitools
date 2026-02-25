@@ -4,7 +4,7 @@
 # The gateway resolves these at dispatch time.
 #
 # Port aliases: web, knowledge_base, gitea, sandbox
-# Model aliases: devstral, qwen-coder, qwen3-next (resolved via .env GGUF filenames)
+# Model aliases: devstral, qwen-coder, qwen35-code, qwen35, qwen35-fast, qwen35-reason, qwen3-next
 # Agent CLIs: vibe, goose, goose-reviewer, qwen, qwen-cloud, kimi
 
 roles:
@@ -30,7 +30,7 @@ roles:
   coder:
     description: "Write code, modify files, commit changes to a project"
     agent: vibe
-    model: devstral
+    model: qwen35-fast
     mcp_ports: [web, gitea]
     system_prompt: >
       You are a coding agent. Write clean, well-structured code.

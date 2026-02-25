@@ -1,0 +1,52 @@
+# Standalone LLM Inference via llama-swap
+#
+# Runs llama-swap independently from the MCP gateway.
+# Models auto-download from HuggingFace on first use.
+#
+# USAGE:
+#   docker compose -f docker-compose.llm.yaml up -d
+#
+# FIRST RUN:
+#   First model load takes a few minutes (downloading GGUF from HF).
+#   Monitor: docker logs -f llama-swap
+#
+# WEB UI:  http://localhost:8085/ui
+# HEALTH:  curl http://localhost:8085/health
+#
+# The MCP gateway connects via LLM_HOST=http://host.docker.internal:8085
+
+services:
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:cuda
+    container_name: llama-swap
+    ports:
+      - "${LLAMASWAP_PORT:-8085}:8080"
+    volumes:
+      # Pre-downloaded models — mount existing volume with GGUFs
+      - llm-models:/models:ro
+      # HuggingFace model cache — for -hf auto-download (future use)
+      - hf-cache:/root/.cache/huggingface
+      # Config and templates
+      - ./data/llamaswap-config.yaml:/app/config.yaml:ro
+      - ./data/devstral-chat-template.jinja:/app/devstral-chat-template.jinja:ro
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s  # first model download can take a while
+      retries: 3
+
+volumes:
+  llm-models:
+    external: true
+  hf-cache:
