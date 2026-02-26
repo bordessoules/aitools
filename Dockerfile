@@ -28,8 +28,8 @@ RUN playwright install chromium --with-deps
 # Copy application code
 COPY mcp_gateway/ ./mcp_gateway/
 
-# Create cache, auth, and preload directories
-RUN mkdir -p cache auth preload workspace
+# Create cache, auth, preload, config directories
+RUN mkdir -p cache auth preload workspace config
 
 # Default: headed mode with Xvfb (better bot resistance than headless)
 ENV PLAYWRIGHT_DOCKER_HEADED=true

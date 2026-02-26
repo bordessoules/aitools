@@ -45,31 +45,20 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
 
 # =============================================================================
-# VISION API (for general vision tasks)
+# LLM ENDPOINTS & MODELS
 # =============================================================================
-# OpenAI-compatible endpoint for vision models (Qwen3-VL, GPT-4V, etc.)
-# Used for: picture descriptions in documents, web content tail-trimming
-# Can be: LM Studio, llama.cpp, vLLM, OpenAI, Together, any OpenAI-compatible API
-#
-# Examples:
-#   Local LM Studio:    http://localhost:1234/v1
-#   Local llama.cpp:    http://localhost:8080/v1
-#   Remote server:      http://192.168.1.100:1234/v1
-#   Cloud (Together):   https://api.together.xyz/v1
-#   Cloud (OpenAI):     https://api.openai.com/v1
-#   Docker internal:    http://host.docker.internal:1234/v1
-
-VISION_API_URL = os.getenv("VISION_API_URL") or os.getenv("LMSTUDIO_URL") or None  # Backward compat
-VISION_API_KEY = os.getenv("VISION_API_KEY") or os.getenv("LLM_API_KEY", "not-needed")
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl-4b")  # Model name for vision tasks
+# All LLM configuration lives in config/models.yaml.
+# See mcp_gateway/models_config.py for the loader.
+# Use models_config.get_vision_model() and models_config.get_agent_model()
+# to resolve endpoints at runtime.
 
 # =============================================================================
 # DOCLING DOCUMENT PARSING
 # =============================================================================
 # Docling handles PDFs, Office docs with high-quality extraction.
-# "vlm" pipeline sends page images to VISION_API_URL for conversion (best quality).
+# "vlm" pipeline sends page images to the vision LLM for conversion (best quality).
 # "standard" pipeline uses EasyOCR + Tableformer locally (faster, no VLM needed).
-# Picture descriptions optionally use VISION_API_URL if enabled.
+# Picture descriptions optionally use the vision LLM if enabled.
 
 # Docling service URLs
 DOCLING_URL = os.getenv("DOCLING_URL", "http://localhost:5001")
@@ -101,8 +90,8 @@ async def check_docling() -> bool:
     return _docling_available
 
 # Pipeline mode:
-#   "vlm"      - Sends pages to VISION_API_URL for conversion (best quality)
-#                Falls back to local Granite-258M if no VISION_API_URL
+#   "vlm"      - Sends pages to vision endpoint for conversion (best quality)
+#                Falls back to local Granite-258M if no vision endpoint configured
 #   "standard" - EasyOCR + Tableformer (lighter, faster, no VLM needed)
 DOCLING_PIPELINE = os.getenv("DOCLING_PIPELINE", "standard")
 
@@ -111,7 +100,7 @@ DOCLING_VLM_REPO_ID = os.getenv("DOCLING_VLM_REPO_ID", "ibm-granite/granite-docl
 DOCLING_VLM_MAX_TOKENS = _env_int("DOCLING_VLM_MAX_TOKENS") or 4096
 DOCLING_VLM_CONCURRENCY = _env_int("DOCLING_VLM_CONCURRENCY") or 1
 
-# Picture descriptions (optional, uses VISION_API_URL if enabled)
+# Picture descriptions (optional, uses vision endpoint from models.yaml if enabled)
 # When enabled, images/charts in documents are described using the vision model
 DOCLING_DO_PICTURE_DESCRIPTION = os.getenv("DOCLING_DO_PICTURE_DESCRIPTION", "true").lower() == "true"
 
@@ -279,10 +268,10 @@ CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
 # =============================================================================
 # CODING AGENT (pluggable: goose, aider)
 # =============================================================================
-# run_coding_agent() tool — spawns a coding agent in Docker.
-# Agent connects to vLLM for LLM and to our MCP gateway for tools.
+# run_agent() / delegate_agent() tools — spawns an autonomous agent.
+# Agent connects to LLM and to our MCP gateway for tools.
 # Requires Docker socket access (same as code execution).
-# Switch agent via CODING_AGENT env var.
+# Switch agent backend via CODING_AGENT env var.
 
 CODING_AGENT = os.getenv("CODING_AGENT", "goose")
 
@@ -291,9 +280,7 @@ GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "mcp-goose:latest")
 AIDER_IMAGE = os.getenv("AIDER_IMAGE", "paulgauthier/aider:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
 GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
-GOOSE_LLM_URL = os.getenv("GOOSE_LLM_URL", "http://host.docker.internal:8100/v1")
-GOOSE_MODEL = os.getenv("GOOSE_MODEL", "")  # Falls back to VISION_MODEL if empty
-GOOSE_API_KEY = os.getenv("GOOSE_API_KEY", "")  # Falls back to VISION_API_KEY if empty
+# Agent LLM config is now in config/models.yaml (defaults.agent)
 GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
 GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 
@@ -301,7 +288,7 @@ GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 # GITEA GIT SERVER
 # =============================================================================
 # Self-hosted Git server for persistent coding projects.
-# When project= is passed to run_coding_agent(), the workspace is backed by
+# When project= is passed to run_agent(), the workspace is backed by
 # a Gitea repository. Gitea runs inside Docker; Goose (network_mode=host)
 # accesses it via localhost.
 

@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 
 from . import config
+from . import models_config
 from .utils import extract_title as _shared_extract_title
 
 # Import markitdown - may not be installed
@@ -35,15 +36,13 @@ def _get_vision_client():
     if not MARKITDOWN_AVAILABLE:
         return None
 
-    if not config.VISION_API_URL:
+    vision = models_config.get_vision_model()
+    if not vision["url"]:
         return None  # No vision API configured
 
-    base_url = config.VISION_API_URL.rstrip('/')
-    api_key = config.VISION_API_KEY
-
     return OpenAI(
-        base_url=base_url,
-        api_key=api_key
+        base_url=vision["url"].rstrip('/'),
+        api_key=vision["key"]
     )
 
 
@@ -128,7 +127,7 @@ def convert_file(file_path: str | Path, use_vision: bool = True) -> dict:
             client = _get_vision_client()
             if client:
                 md_kwargs['llm_client'] = client
-                md_kwargs['llm_model'] = config.VISION_MODEL
+                md_kwargs['llm_model'] = models_config.get_vision_model()["name"]
                 md_kwargs['llm_prompt'] = (
                     "Describe this image in detail, focusing on any text, charts, "
                     "diagrams, or visual information that would be relevant for document analysis."

@@ -1,12 +1,6 @@
 """
 MCP Gateway - Plugin-based tool server.
 
-Tools are organized into plugins (mcp_gateway/plugins/), each enabled via env var:
-  ENABLE_WEB_TOOLS=true        search, fetch, fetch_section, cache
-  ENABLE_KB_TOOLS=true         kb_search, kb_list, kb_remove, add_to_knowledge_base
-  ENABLE_CODE_EXECUTION=false  run_code
-  ENABLE_CODING_AGENT=false    run_coding_agent, delegate_coding_agent, list_projects
-
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)
 2. search(query) - Find new sources if needed
@@ -81,7 +75,7 @@ def run_sse(host: str = "0.0.0.0", port: int = 8000):
 
     # Serve both MCP transports:
     # - SSE at /sse + /messages/ (for existing MCP clients like Claude Code)
-    # - Streamable HTTP at /mcp (for Goose and newer MCP clients)
+    # - Streamable HTTP at /mcp (for newer MCP clients)
     import contextlib
 
     sse_app_instance = mcp.sse_app()

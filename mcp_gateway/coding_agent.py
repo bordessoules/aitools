@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+from . import models_config
 from .logger import get_logger
 
 log = get_logger("coding_agent")
@@ -34,15 +35,9 @@ except ImportError:
     _DOCKER_AVAILABLE = False
 
 
-def _goose_model() -> str:
-    """Resolve Goose model: GOOSE_MODEL if set, else VISION_MODEL."""
-    return config.GOOSE_MODEL or config.VISION_MODEL
-
-
-def _goose_api_key() -> str:
-    """Resolve Goose API key: GOOSE_API_KEY if set, else VISION_API_KEY."""
-    from .llm import API_KEY_PLACEHOLDER
-    return config.GOOSE_API_KEY or config.VISION_API_KEY or API_KEY_PLACEHOLDER
+def _agent_model() -> dict:
+    """Resolve agent model from models.yaml: {url, key, name}."""
+    return models_config.get_agent_model()
 
 
 def _mcp_gateway_url() -> str | None:
@@ -67,7 +62,7 @@ def _build_command(task: str) -> list[str]:
     cmd = [
         "run",
         "--provider", "openai",
-        "--model", _goose_model(),
+        "--model", _agent_model()["name"],
         "--with-builtin", "developer",
         "--text", task,
     ]
@@ -91,7 +86,7 @@ def _build_reviewer_command(task: str) -> list[str]:
     cmd = [
         "run",
         "--provider", "openai",
-        "--model", _goose_model(),
+        "--model", _agent_model()["name"],
         "--text", task,
     ]
 
@@ -108,15 +103,15 @@ def _build_reviewer_command(task: str) -> list[str]:
 
 AGENT_PROFILES = {
     "goose": {
-        "label": "Goose Developer",
-        "description": "Full coding agent — has local file tools (shell, write_file) + MCP gateway. Best for coding tasks.",
+        "label": "Developer Agent",
+        "description": "Full coding agent — file editing, shell commands, and gateway tools.",
         "build_command": _build_command,
         "git_author": "Goose Agent",
         "git_email": "goose@mcp-gateway",
     },
     "goose-reviewer": {
-        "label": "Goose Reviewer",
-        "description": "Review-only agent — MCP gateway tools only (gitea, search, fetch). No local file access. Best for code reviews and PR analysis.",
+        "label": "Review Agent",
+        "description": "Review-only agent — search, fetch, and git tools. No local file access.",
         "build_command": _build_reviewer_command,
         "git_author": "Goose Reviewer",
         "git_email": "goose-reviewer@mcp-gateway",
@@ -350,12 +345,13 @@ async def _prepare_task(workspace: str | None = None,
         host_workspace: {"bind": "/workspace", "mode": "rw"},
     }
 
+    agent = _agent_model()
     environment = {
         "GOOSE_PROVIDER": "openai",
-        "GOOSE_MODEL": _goose_model(),
-        "OPENAI_HOST": config.GOOSE_LLM_URL.rstrip("/v1").rstrip("/"),
+        "GOOSE_MODEL": agent["name"],
+        "OPENAI_HOST": agent["url"].rstrip("/v1").rstrip("/"),
         "OPENAI_BASE_PATH": "/v1/chat/completions",
-        "OPENAI_API_KEY": _goose_api_key(),
+        "OPENAI_API_KEY": agent["key"],
     }
 
     return TaskSetup(
@@ -562,6 +558,7 @@ async def run_task_async(task: str, workspace: str | None = None,
         "finished_at": None,
         "exit_code": None,
         "output": None,
+        "await_count": 0,
     }
 
     # Fire and forget
@@ -571,7 +568,47 @@ async def run_task_async(task: str, workspace: str | None = None,
         f"Job started: {job_id}\n"
         f"Agent: {profile['label']}\n"
         f"Project: {project or '(none)'}\n"
-        f"\nUse check_coding_job('{job_id}') to poll for results."
+        f"\nUse check_agent_job('{job_id}') to poll for results."
+    )
+
+
+def _await_backoff(count: int) -> int:
+    """Progressive backoff: 35s, 40s, 45s, 50s... capped at 60s."""
+    return min(35 + (count * 5), 60)
+
+
+async def await_agent(job_id: str) -> str:
+    """Wait for an agent job with progressive backoff.
+
+    First call waits 35s, second 40s, third 45s, etc. (capped at 60s).
+    Returns the result if the agent finishes during the wait, otherwise
+    returns a status update prompting the caller to try again.
+    """
+    if job_id not in _jobs:
+        return check_job(job_id)
+
+    job = _jobs[job_id]
+
+    # Already done? Return full result immediately.
+    if job.get("status") in ("completed", "failed"):
+        return check_job(job_id)
+
+    # Progressive backoff
+    count = job.get("await_count", 0)
+    wait_secs = _await_backoff(count)
+    job["await_count"] = count + 1
+
+    # Hold connection for wait_secs, checking every 2s
+    deadline = time.monotonic() + wait_secs
+    while time.monotonic() < deadline:
+        await asyncio.sleep(2)
+        if job.get("status") in ("completed", "failed"):
+            return check_job(job_id)
+
+    elapsed = int(time.monotonic() - job["started_at"])
+    return (
+        f"Agent still working ({elapsed}s elapsed). "
+        f"Call await_agent('{job_id}') again to check."
     )
 
 

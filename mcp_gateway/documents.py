@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from . import config
+from . import models_config
 from .llm import build_vlm_params, build_auth_headers
 from .logger import get_logger
 from .utils import safe_text, extract_title
@@ -37,7 +38,7 @@ def _build_docling_options() -> dict:
 
     Pipeline modes:
         - "vlm": Uses Vision API as external VLM (fast, best quality, no local VRAM).
-                 Falls back to local Granite-258M if no VISION_API_URL is set.
+                 Falls back to local Granite-258M if no vision endpoint is configured.
         - "standard": EasyOCR + Tableformer (lighter, no VLM needed)
 
     Returns:
@@ -52,12 +53,13 @@ def _build_docling_options() -> dict:
     if config.DOCLING_PIPELINE == "vlm":
         options["pipeline"] = "vlm"
 
-        if config.VISION_API_URL:
+        vision = models_config.get_vision_model()
+        if vision["url"]:
             # External VLM via API (recommended: fast, no local VRAM)
             vlm_params = build_vlm_params(max_tokens=config.DOCLING_VLM_MAX_TOKENS)
 
             options["vlm_pipeline_model_api"] = {
-                "url": f"{config.VISION_API_URL}/chat/completions",
+                "url": f"{vision['url']}/chat/completions",
                 "params": vlm_params,
                 "headers": build_auth_headers(),
                 "prompt": "Convert this page to markdown. Do not miss any text and only output the bare markdown!",
@@ -90,10 +92,11 @@ def _build_docling_options() -> dict:
         options["do_table_structure"] = True
 
     # Picture descriptions via Vision API (works with both pipelines)
-    if config.DOCLING_DO_PICTURE_DESCRIPTION and config.VISION_API_URL:
+    vision_cfg = models_config.get_vision_model()
+    if config.DOCLING_DO_PICTURE_DESCRIPTION and vision_cfg["url"]:
         options["do_picture_description"] = True
         options["picture_description_api"] = {
-            "url": f"{config.VISION_API_URL}/chat/completions",
+            "url": f"{vision_cfg['url']}/chat/completions",
             "params": build_vlm_params(),
             "timeout": config.TIMEOUT_LLM,
             "headers": build_auth_headers(),

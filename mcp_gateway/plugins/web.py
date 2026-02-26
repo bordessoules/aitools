@@ -8,6 +8,7 @@ import httpx
 from .. import config
 from .. import documents
 from .. import fetch as fetch_module
+from .. import models_config
 from .. import routing
 from ..logger import get_logger
 
@@ -20,7 +21,7 @@ def register(mcp):
     @mcp.tool()
     async def search(query: str) -> str:
         """
-        Search the web via SearXNG for current information.
+        Search the web for current information.
 
         BEST PRACTICE: Before calling this, try kb_search() first!
         Your knowledge base is faster and may already contain relevant answers.
@@ -48,8 +49,8 @@ def register(mcp):
         Use this to read and evaluate whether content is worth saving.
 
         Handles content types automatically:
-        - Web pages: Docling pipeline (escalating HTML sources) → tail-trim
-        - PDFs/DOCs: Docling → MarkItDown fallback
+        - Web pages: Rendered and converted to markdown
+        - PDFs/DOCs: Parsed and converted to markdown
         - Images: Described via vision AI
         - GitHub repos: README extracted
 
@@ -175,10 +176,11 @@ async def health_checks() -> list[tuple[str, bool]]:
         checks.append(("[WARN] SearXNG not reachable - search will not work", False))
 
     # Vision API / LLM
-    if config.VISION_API_URL:
+    vision = models_config.get_vision_model()
+    if vision["url"]:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f"{config.VISION_API_URL}/models")
+                resp = await client.get(f"{vision['url']}/models")
                 if resp.status_code == 200:
                     data = resp.json()
                     models = [m.get("id", "?") for m in data.get("data", [])[:3]]

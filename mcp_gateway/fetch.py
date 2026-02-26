@@ -31,6 +31,7 @@ import httpx
 
 from . import config
 from . import documents
+from . import models_config
 from .llm import call_llm
 from .logger import get_logger
 from .utils import extract_title, safe_text
@@ -431,8 +432,8 @@ async def _tail_trim(markdown: str) -> str:
         for i, line in enumerate(lines[tail_start:])
     )
 
-    if not config.VISION_API_URL:
-        log.debug("Tail-trim: no VLM configured, returning full content")
+    if not models_config.get_vision_model()["url"]:
+        log.debug("Tail-trim: no vision model configured, returning full content")
         return markdown
 
     messages = [
@@ -639,10 +640,10 @@ async def _extract_with_markitdown(url: str) -> str | None:
 
 
 async def describe_image(url: str, prompt: str = "Describe this image in detail.") -> str:
-    """Describe an image using the Vision API (VISION_API_URL).
+    """Describe an image using the Vision API.
 
     Downloads the image, base64-encodes it, and sends it to the configured
-    vision model for description. Requires VISION_API_URL to be set.
+    vision model for description. Requires a vision endpoint in models.yaml.
 
     Args:
         url: Direct URL to the image file
