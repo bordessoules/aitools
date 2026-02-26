@@ -19,7 +19,7 @@ import httpx
 
 from . import config
 from . import models_config
-from .utils import extract_title as _shared_extract_title
+from .utils import extract_title
 
 # Import markitdown - may not be installed
 try:
@@ -153,7 +153,7 @@ def convert_file(file_path: str | Path, use_vision: bool = True) -> dict:
             os.unlink(temp_file)
         
         # Extract title from content
-        title = _extract_title(result.text_content)
+        title = extract_title(result.text_content)
         
         return {
             'success': True,
@@ -172,11 +172,6 @@ def convert_file(file_path: str | Path, use_vision: bool = True) -> dict:
             'text_content': '',
             'title': ''
         }
-
-
-def _extract_title(text: str) -> str:
-    """Extract title from markdown content. Delegates to shared utils."""
-    return _shared_extract_title(text)
 
 
 if __name__ == "__main__":

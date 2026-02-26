@@ -1,0 +1,16 @@
+# Mistral Vibe CLI agent with git
+# Build: docker compose build vibe-image
+# Vibe is Mistral's native agent for devstral
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir mistral-vibe 2>/dev/null || \
+    pip install --no-cache-dir vibe-cli 2>/dev/null || \
+    echo "WARN: vibe package not found, install manually"
+
+WORKDIR /workspace

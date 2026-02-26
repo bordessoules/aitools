@@ -25,8 +25,9 @@ RUN uv pip install --system -r requirements.txt && \
 # Install Chromium for web extraction (Docker Playwright)
 RUN playwright install chromium --with-deps
 
-# Copy application code
+# Copy application code and config
 COPY mcp_gateway/ ./mcp_gateway/
+COPY config/ ./config/
 
 # Create cache, auth, preload, config directories
 RUN mkdir -p cache auth preload workspace config
@@ -34,8 +35,8 @@ RUN mkdir -p cache auth preload workspace config
 # Default: headed mode with Xvfb (better bot resistance than headless)
 ENV PLAYWRIGHT_DOCKER_HEADED=true
 
-# Expose gateway port
-EXPOSE 8000
+# Expose gateway ports (8000=all-in-one, 8001-8005=per-plugin)
+EXPOSE 8000 8001 8002 8003 8004 8005
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

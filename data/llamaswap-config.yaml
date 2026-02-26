@@ -1,0 +1,173 @@
+healthCheckTimeout: 600
+
+# Models auto-download from HuggingFace on first use (requires HF_TOKEN for private repos).
+# -hf = HF repo, -hff = specific file in repo.
+# Cache: /root/.cache/huggingface (Docker volume: hf-cache)
+# qwen3-next stays on --model /models/ (already in volume, 35 GB)
+
+models:
+  devstral:
+    name: "Devstral Small 24B (IQ4_XS)"
+    cmd: |
+      llama-server --port ${PORT}
+      --model /models/Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 131072
+      --parallel 1
+      --temp 0.15
+      --min-p 0.01
+      --jinja
+      --chat-template-file /app/devstral-chat-template.jinja
+    aliases:
+      - "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf"
+    ttl: 300
+
+  qwen-coder:
+    name: "Qwen3 Coder 30B A3B (IQ4_XS)"
+    cmd: |
+      llama-server --port ${PORT}
+      --model /models/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 98304
+      --parallel 1
+      --temp 0.7
+      --top-p 0.8
+      --top-k 20
+      --min-p 0
+      --repeat-penalty 1.05
+      --jinja
+    aliases:
+      - "Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"
+    ttl: 300
+
+  # ── Qwen3.5 35B A3B profiles (same GGUF, different sampling) ──────────
+
+  qwen35-code:
+    name: "Qwen3.5 35B A3B | Thinking | Code"
+    cmd: |
+      llama-server --port ${PORT}
+      -hf unsloth/Qwen3.5-35B-A3B-GGUF
+      -hff Qwen3.5-35B-A3B-MXFP4_MOE.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 262144
+      --parallel 1
+      --temp 0.6
+      --top-p 0.95
+      --top-k 20
+      --min-p 0
+      --presence-penalty 0.0
+      --jinja
+    aliases:
+      - "qwen35-code"
+    ttl: 300
+
+  qwen35:
+    name: "Qwen3.5 35B A3B | Thinking | General"
+    cmd: |
+      llama-server --port ${PORT}
+      -hf unsloth/Qwen3.5-35B-A3B-GGUF
+      -hff Qwen3.5-35B-A3B-MXFP4_MOE.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 262144
+      --parallel 1
+      --temp 1.0
+      --top-p 0.95
+      --top-k 20
+      --min-p 0
+      --presence-penalty 1.5
+      --jinja
+    aliases:
+      - "Qwen3.5-35B-A3B-MXFP4_MOE.gguf"
+    ttl: 300
+
+  qwen35-fast:
+    name: "Qwen3.5 35B A3B | No-Think | General"
+    cmd: |
+      llama-server --port ${PORT}
+      -hf unsloth/Qwen3.5-35B-A3B-GGUF
+      -hff Qwen3.5-35B-A3B-MXFP4_MOE.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 262144
+      --parallel 1
+      --temp 0.7
+      --top-p 0.8
+      --top-k 20
+      --min-p 0
+      --presence-penalty 1.5
+      --jinja
+      --chat-template-kwargs '{"enable_thinking": false}'
+    aliases:
+      - "qwen35-fast"
+    ttl: 300
+
+  qwen35-reason:
+    name: "Qwen3.5 35B A3B | No-Think | Reasoning"
+    cmd: |
+      llama-server --port ${PORT}
+      -hf unsloth/Qwen3.5-35B-A3B-GGUF
+      -hff Qwen3.5-35B-A3B-MXFP4_MOE.gguf
+      --n-gpu-layers 999
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 262144
+      --parallel 1
+      --temp 1.0
+      --top-p 1.0
+      --top-k 40
+      --min-p 0
+      --presence-penalty 2.0
+      --jinja
+      --chat-template-kwargs '{"enable_thinking": false}'
+    aliases:
+      - "qwen35-reason"
+    ttl: 300
+
+  qwen3-next:
+    name: "Qwen3 Coder Next 80B MoE (REAM MXFP4)"
+    cmd: |
+      llama-server --port ${PORT}
+      --model /models/Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf
+      --n-gpu-layers 999
+      -ot blk\.(2[6-9]|3[0-9]|4[0-7])\.ffn_(gate|up)_exps=CPU,blk\.(3[0-9]|4[0-7])\.ffn_down_exps=CPU
+      --flash-attn on
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --ctx-size 131072
+      --parallel 1
+      --no-mmap
+      --temp 1.0
+      --top-p 0.95
+      --top-k 40
+      --min-p 0.01
+      --jinja
+    aliases:
+      - "Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"
+    ttl: 300
+
+groups:
+  single-gpu:
+    swap: true
+    members:
+      - devstral
+      - qwen-coder
+      - qwen35-code
+      - qwen35
+      - qwen35-fast
+      - qwen35-reason
+      - qwen3-next

@@ -38,6 +38,29 @@ def _env_int(key: str) -> int | None:
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # =============================================================================
+# MULTI-PORT MCP
+# =============================================================================
+# Each plugin gets its own MCP port for composable tool access.
+# Clients connect to the ports they need. Port 8000 keeps all tools (backward compat).
+# Plugin ports map 1:1 to plugin names in PLUGIN_MODULES.
+
+GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8000"))  # All-in-one (backward compat)
+WEB_PORT = int(os.getenv("WEB_PORT", "8001"))           # search, fetch, fetch_section, cache
+KB_PORT = int(os.getenv("KB_PORT", "8002"))              # kb_search, kb_list, kb_remove, add_to_knowledge_base
+AGENT_PORT = int(os.getenv("AGENT_PORT", "8003"))        # delegate_coding_agent, check_coding_job, ...
+SANDBOX_PORT = int(os.getenv("SANDBOX_PORT", "8004"))    # run_code
+GITEA_PLUGIN_PORT = int(os.getenv("GITEA_PLUGIN_PORT", "8005"))  # git_browse, git_pr
+
+# Mapping from plugin name to port (used by gateway and agent composition)
+PLUGIN_PORTS = {
+    "web": WEB_PORT,
+    "knowledge": KB_PORT,
+    "agent": AGENT_PORT,
+    "sandbox": SANDBOX_PORT,
+    "gitea_plugin": GITEA_PLUGIN_PORT,
+}
+
+# =============================================================================
 # SERVICE URLs
 # =============================================================================
 
@@ -67,7 +90,7 @@ USE_DOCLING_GPU = os.getenv("USE_DOCLING_GPU", "false").lower() == "true"
 
 
 def docling_url() -> str:
-    """Resolved Docling URL (GPU or CPU based on config)."""
+    """Return the active Docling service URL (GPU or CPU)."""
     return DOCLING_GPU_URL if USE_DOCLING_GPU else DOCLING_URL
 
 
@@ -88,6 +111,7 @@ async def check_docling() -> bool:
     except Exception:
         _docling_available = False
     return _docling_available
+
 
 # Pipeline mode:
 #   "vlm"      - Sends pages to vision endpoint for conversion (best quality)
@@ -199,6 +223,13 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
+# ROLES CONFIG
+# =============================================================================
+# Role definitions for delegate_to_agent() — maps role names to agent profiles.
+
+ROLES_FILE = Path(os.getenv("ROLES_FILE", "./config/roles.yaml"))
+
+# =============================================================================
 # PRELOAD FOLDER
 # =============================================================================
 # Drop files (PDFs, docs, etc.) into this folder and they'll be indexed into
@@ -266,20 +297,19 @@ CODE_SANDBOX_MEMORY_LIMIT = os.getenv("CODE_SANDBOX_MEMORY_LIMIT", "256m")
 CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
 
 # =============================================================================
-# CODING AGENT (pluggable: goose, aider)
+# CODING AGENT
 # =============================================================================
-# run_agent() / delegate_agent() tools — spawns an autonomous agent.
-# Agent connects to LLM and to our MCP gateway for tools.
+# delegate_to_agent() / await_agent() tools — spawns a coding agent in Docker.
+# Agent connects to LLM endpoint and to MCP gateway for tools.
 # Requires Docker socket access (same as code execution).
-# Switch agent backend via CODING_AGENT env var.
 
-CODING_AGENT = os.getenv("CODING_AGENT", "goose")
-
-# Per-agent Docker images (only the selected agent's image is used)
+# Per-agent Docker images
 GOOSE_IMAGE = os.getenv("GOOSE_IMAGE", "mcp-goose:latest")
-AIDER_IMAGE = os.getenv("AIDER_IMAGE", "paulgauthier/aider:latest")
+QWEN_IMAGE = os.getenv("QWEN_IMAGE", "mcp-qwen:latest")
+VIBE_IMAGE = os.getenv("VIBE_IMAGE", "mcp-vibe:latest")
+KIMI_IMAGE = os.getenv("KIMI_IMAGE", "mcp-kimi:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
-GOOSE_TIMEOUT = int(os.getenv("GOOSE_TIMEOUT", "300"))
+AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "600"))
 # Agent LLM config is now in config/models.yaml (defaults.agent)
 GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
 GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")

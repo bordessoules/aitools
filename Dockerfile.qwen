@@ -1,0 +1,18 @@
+# Qwen Code CLI agent with git
+# Build: docker compose build qwen-image
+# Package: @qwen-code/qwen-code (binary: qwen)
+
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @qwen-code/qwen-code
+
+# Make python3 available as "python"
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+WORKDIR /workspace

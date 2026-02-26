@@ -45,10 +45,28 @@ try:
 except ImportError:
     MARKITDOWN_AVAILABLE = False
 
-# Feature flags (set at startup)
-MARKITDOWN_WEB_AVAILABLE = None
-DOCKER_PLAYWRIGHT_AVAILABLE = None
-LOCAL_CHROME_AVAILABLE = None
+# Service availability cache with TTL (re-probe every 5 min)
+import time as _time
+
+_SERVICE_TTL = 300  # seconds
+_service_cache: dict[str, tuple[bool, float]] = {}
+
+
+def _cached_flag(key: str) -> bool | None:
+    """Return cached availability or None if expired/missing."""
+    entry = _service_cache.get(key)
+    if entry is None:
+        return None
+    value, ts = entry
+    if _time.monotonic() - ts > _SERVICE_TTL:
+        return None  # expired
+    return value
+
+
+def _set_flag(key: str, value: bool) -> bool:
+    """Cache an availability result and return it."""
+    _service_cache[key] = (value, _time.monotonic())
+    return value
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -75,57 +93,53 @@ Respond with ONLY a JSON object: {"last_article_line": 280}
 
 
 async def check_local_chrome_available() -> bool:
-    """Check if local Chrome via Playwright MCP extension is available.
-
-    This is the maximum bot-resistance tier — uses a real local Chrome browser
-    controlled via the Playwright MCP extension. Falls back if not installed.
-    """
-    global LOCAL_CHROME_AVAILABLE
-    if LOCAL_CHROME_AVAILABLE is not None:
-        return LOCAL_CHROME_AVAILABLE
+    """Check if local Chrome via Playwright MCP extension is available."""
+    cached = _cached_flag("local_chrome")
+    if cached is not None:
+        return cached
 
     try:
         project_root = Path(__file__).parent.parent
         cmd = str(project_root / "node_modules" / ".bin" / "playwright-mcp.cmd") if os.name == 'nt' else str(project_root / "node_modules" / ".bin" / "playwright-mcp")
         if not Path(cmd).exists():
             log.info("Playwright MCP not found, local Chrome disabled")
-            LOCAL_CHROME_AVAILABLE = False
-            return False
+            return _set_flag("local_chrome", False)
         log.info("Local Chrome available via Playwright MCP")
-        LOCAL_CHROME_AVAILABLE = True
-        return True
+        return _set_flag("local_chrome", True)
     except Exception as e:
         log.warning("Local Chrome check failed: %s", e)
-        LOCAL_CHROME_AVAILABLE = False
-        return False
-
-
-async def check_markitdown_web_available() -> bool:
-    """Check if MarkItDown can handle web pages."""
-    global MARKITDOWN_WEB_AVAILABLE
-    if MARKITDOWN_WEB_AVAILABLE is not None:
-        return MARKITDOWN_WEB_AVAILABLE
-    MARKITDOWN_WEB_AVAILABLE = MARKITDOWN_AVAILABLE
-    return MARKITDOWN_WEB_AVAILABLE
+        return _set_flag("local_chrome", False)
 
 
 async def check_docker_playwright_available() -> bool:
     """Check if Docker Playwright is available."""
-    global DOCKER_PLAYWRIGHT_AVAILABLE
-    if DOCKER_PLAYWRIGHT_AVAILABLE is not None:
-        return DOCKER_PLAYWRIGHT_AVAILABLE
+    cached = _cached_flag("docker_playwright")
+    if cached is not None:
+        return cached
+
     try:
         from .docker_playwright import is_available
-        DOCKER_PLAYWRIGHT_AVAILABLE = await is_available()
-        return DOCKER_PLAYWRIGHT_AVAILABLE
+        return _set_flag("docker_playwright", await is_available())
     except ImportError:
-        DOCKER_PLAYWRIGHT_AVAILABLE = False
-        return False
+        return _set_flag("docker_playwright", False)
 
 
 async def check_docling_available() -> bool:
     """Check if Docling is available for web extraction."""
-    return await config.check_docling()
+    cached = _cached_flag("docling")
+    if cached is not None:
+        return cached
+
+    docling_url = config.docling_url()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{docling_url}/health")
+            available = resp.status_code == 200
+    except Exception:
+        available = False
+    if available:
+        log.info("Docling available at %s", docling_url)
+    return _set_flag("docling", available)
 
 # ---------------------------------------------------------------------------
 # Cache helper
@@ -160,56 +174,34 @@ def _get_extractors(
     has_docling: bool,
     has_local_chrome: bool,
 ) -> list[tuple[str, object, str | None]]:
-    """Build ordered list of (name, extractor_coro, unavailable_reason) to try.
+    """Build ordered list of (name, extractor, unavailable_reason) to try.
 
-    Architecture: only the HTML source changes per tier, conversion is always
-    Docling→markdown→tail-trim. When Docling is down, fall back to
-    Playwright+MarkItDown (no LLM needed).
-
-    Each entry is a tuple of:
-      - name: display name for logging/metadata
-      - extractor: async callable(url) -> str | None
-      - unavailable_reason: error string if capability missing, None if available
+    Each entry is (name, async callable(url)->str|None, error_string_or_None).
     """
-    all_extractors = {
-        # Primary: Docling pipeline (internally escalates HTML sources)
-        "docling": (
-            "docling",
-            _extract_with_docling,
-            None if has_docling else "Docling: Not available",
-        ),
-        # Fallback: Playwright + MarkItDown (no LLM needed)
-        "docker_playwright": (
-            "docker_playwright",
-            _extract_with_playwright,
-            None if has_docker_playwright else "Docker Playwright: Not available",
-        ),
-        # Forced modes
-        "local_chrome": (
-            "local_chrome",
-            _extract_with_local_chrome,
-            None if (has_local_chrome and has_docling) else "Local Chrome or Docling: Not available",
-        ),
-        "markitdown": (
-            "markitdown",
-            _extract_with_markitdown,
-            None if has_markitdown else "MarkItDown: Not available",
-        ),
-    }
+    def _entry(name, extractor, available, reason):
+        return (name, extractor, None if available else reason)
 
-    if method == "auto":
-        # Docling pipeline (escalates HTML sources internally), then MarkItDown fallback
-        return [
-            all_extractors["docling"],
-            all_extractors["docker_playwright"],
-        ]
+    if method == "local_chrome":
+        return [_entry("local_chrome", _extract_with_local_chrome,
+                        has_local_chrome and has_docling, "Local Chrome or Docling: Not available")]
+    if method == "markitdown":
+        return [_entry("markitdown", _extract_with_markitdown,
+                        has_markitdown, "MarkItDown: Not available")]
+    if method == "docker_playwright":
+        return [_entry("docker_playwright", _extract_with_playwright,
+                        has_docker_playwright, "Docker Playwright: Not available")]
+    if method == "docling":
+        return [_entry("docling", _extract_with_docling,
+                        has_docling, "Docling: Not available")]
 
-    if method in all_extractors:
-        return [all_extractors[method]]
+    if method != "auto":
+        log.warning("Unknown extraction method '%s', using auto", method)
 
-    # Unknown method — fall back to auto
-    log.warning("Unknown extraction method '%s', using auto", method)
-    return [all_extractors["docling"], all_extractors["docker_playwright"]]
+    # Auto: Docling pipeline first, then Playwright+MarkItDown fallback
+    return [
+        _entry("docling", _extract_with_docling, has_docling, "Docling: Not available"),
+        _entry("docker_playwright", _extract_with_playwright, has_docker_playwright, "Docker Playwright: Not available"),
+    ]
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -247,7 +239,7 @@ async def get_webpage(url: str, section: int | None = None, force_method: str | 
 
     # Check available extractors
     method = force_method or config.WEB_EXTRACTION_METHOD
-    has_markitdown = await check_markitdown_web_available()
+    has_markitdown = MARKITDOWN_AVAILABLE
     has_docker_playwright = await check_docker_playwright_available()
     has_docling = await check_docling_available()
     has_local_chrome = await check_local_chrome_available()
@@ -581,6 +573,7 @@ async def _extract_with_playwright(url: str) -> str | None:
 
     This is the no-LLM fallback when Docling is unavailable.
     MarkItDown converts the rendered HTML to markdown.
+    Falls back to raw text extraction if MarkItDown is unavailable.
     """
     from .docker_playwright import extract_webpage
 
@@ -594,7 +587,30 @@ async def _extract_with_playwright(url: str) -> str | None:
         if md_result:
             return md_result
 
+    # Fallback: strip tags and return raw text
+    text = _strip_html_tags(html)
+    if text and len(text) > 200:
+        log.info("Playwright raw text fallback: %d chars", len(text))
+        return f"Source: {url}\n\n{text}"
+
     return None
+
+# ---------------------------------------------------------------------------
+# HTML helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_html_tags(html: str) -> str:
+    """Strip HTML tags and collapse whitespace. Last-resort text extraction."""
+    # Remove script/style blocks
+    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    # Remove tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Collapse whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 
 # ---------------------------------------------------------------------------
 # MarkItDown HTML conversion (used by Playwright fallback)

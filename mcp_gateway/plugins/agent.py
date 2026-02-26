@@ -1,106 +1,112 @@
-"""Agent plugin.
+"""Role-based agent delegation plugin.
 
-Provides tools for delegating tasks to autonomous agents.
+Provides tools:
+- delegate_to_agent(role, task, project) -- fire-and-forget, returns job_id
+- await_agent(job_id) -- progressive-backoff check (35s, 40s, 45s...)
+- list_roles() -- show available roles
+- list_projects() -- show Gitea-backed projects
+
+Roles are defined in config/roles.yaml. Each role maps to a CLI scaffold,
+model, and set of MCP tool ports.
 """
 
 from .. import coding_agent
 from .. import gitea
+from .. import roles
 from ..logger import get_logger
 
 log = get_logger("plugin.agent")
 
 
 def register(mcp):
-    """Register agent tools with FastMCP."""
-
-    _, active_profile = coding_agent.get_active_profile()
-    agent_label = active_profile["label"]
+    """Register role-based agent tools with FastMCP."""
 
     @mcp.tool()
-    async def run_agent(task: str, workspace: str | None = None, project: str | None = None) -> str:
-        """
-        Run an autonomous agent to complete a task.
-
-        The agent can:
-        - Write and modify code files in the workspace
-        - Execute shell commands
-        - Use tools (search, fetch, knowledge base)
-
-        Best for multi-step tasks:
-        - "Fix the authentication bug in auth.py"
-        - "Create a REST API for user management"
-        - "Research best practices for caching strategies"
-
-        Args:
-            task: Natural language description of the task
-            workspace: Optional workspace directory path
-            project: Optional project name for persistent work. When set,
-                     changes are version-controlled. Use the same project name
-                     across sessions to resume work.
-
-        Returns:
-            Agent output with task results
-        """
-        return await coding_agent.run_task(task, workspace, project=project)
-
-    # ------------------------------------------------------------------
-    # Async tools — fire-and-forget with polling (avoids MCP timeouts)
-    # ------------------------------------------------------------------
-
-    @mcp.tool()
-    async def delegate_agent(
+    async def delegate_to_agent(
+        role: str,
         task: str,
-        workspace: str | None = None,
         project: str | None = None,
-        agent: str = "goose",
     ) -> str:
         """
-        Start an agent asynchronously (returns immediately with a job ID).
+        Delegate a task to a specialized agent role.
 
-        Returns instantly — use check_agent_job() to wait for results.
-        Best for long-running tasks that would otherwise timeout.
+        The agent runs in an isolated Docker container with access to specific
+        tools based on its role. Returns immediately with a job reference.
+        Use await_agent(job_id) to check when the agent finishes.
 
-        Available agents: use list_agents() to see options.
+        Use list_roles() to see available roles and their capabilities.
 
         Args:
-            task: Natural language description of the task
-            workspace: Optional workspace directory path
-            project: Optional project name for persistent work
-            agent: Agent profile to use. See list_agents() for options.
+            role: Agent role (e.g., "researcher", "reviewer", "coder").
+                  Use list_roles() to see options.
+            task: What the agent should do (natural language description)
+            project: Optional project name for persistent code in Gitea.
+                     If not provided, a name is auto-generated from the task.
 
         Returns:
-            Job ID to use with check_agent_job()
+            Job reference with instructions to check status.
         """
-        return await coding_agent.run_task_async(task, workspace, project=project, agent=agent)
+        role_def = roles.get_role(role)
+        if role_def is None:
+            available = roles.format_roles_list()
+            return f"Unknown role '{role}'.\n\n{available}"
+
+        # Auto-generate project name if not provided
+        if project is None:
+            project = roles.slugify_task(task)
+
+        # Resolve role config -> agent execution parameters
+        agent_name = role_def.get("agent", "vibe")
+        model = role_def.get("model", None)
+        mcp_ports = roles.resolve_mcp_ports(role_def)
+        system_prompt = role_def.get("system_prompt", None)
+
+        log.info("Delegating to role '%s' (agent=%s, model=%s, project=%s)",
+                 role, agent_name, model, project)
+
+        job_id = await coding_agent.run_task_fire(
+            task=task,
+            agent=agent_name,
+            model=model,
+            mcp_ports_override=mcp_ports,
+            project=project,
+            system_prompt=system_prompt,
+        )
+
+        return (
+            f"Agent dispatched.\n"
+            f"  Role: {role}\n"
+            f"  Project: {project}\n"
+            f"  Job: {job_id}\n\n"
+            f"Use await_agent(job_id='{job_id}') to check when it finishes."
+        )
 
     @mcp.tool()
-    async def check_agent_job(job_id: str) -> str:
+    async def await_agent(job_id: str) -> str:
         """
-        Check the status of an async agent job.
+        Wait for an agent to finish with progressive backoff.
 
-        Poll this after calling delegate_agent() to get results.
-        Waits 35-60 seconds per call, checking periodically.
-        Returns status (starting/running/completed/failed) and output when done.
+        Each call holds the connection for an increasing amount of time
+        (35s, 40s, 45s, ...) before returning. If the agent finishes
+        during the wait, the full result is returned immediately.
 
         Args:
-            job_id: The job ID returned by delegate_agent()
+            job_id: The job ID returned by delegate_to_agent.
 
         Returns:
-            Job status and agent output (if completed)
+            The agent's result if finished, or a status update if still running.
         """
         return await coding_agent.await_agent(job_id)
 
     @mcp.tool()
-    async def list_agents() -> str:
+    async def list_roles() -> str:
         """
-        List available agent profiles.
+        List available agent roles and their capabilities.
 
-        Shows agent types that can be used with delegate_agent(agent=...).
-
-        Returns:
-            Agent names and descriptions
+        Each role has a specific focus and set of tools.
+        Use the role name with delegate_to_agent(role=..., task=...).
         """
-        return coding_agent.list_agent_profiles()
+        return roles.format_roles_list()
 
     # ------------------------------------------------------------------
     # Project management
@@ -121,36 +127,35 @@ def register(mcp):
 
         repos = await gitea.list_repos()
         if not repos:
-            return "No projects found. Create one with: run_agent(task='...', project='my-project')"
+            return (
+                "No projects found. Create one with:\n"
+                "  delegate_to_agent(role='coder', task='...', project='my-project')"
+            )
 
         lines = [f"Found {len(repos)} project(s):\n"]
         for r in repos:
-            name = r["name"]
-            desc = r.get("description", "")
-            updated = r.get("updated_at", "")[:10]
-            url = r.get("html_url", "")
-            lines.append(f"  - {name}")
-            if desc:
-                lines.append(f"    {desc}")
-            lines.append(f"    Updated: {updated} | Browse: {url}")
+            lines.append(f"  - {r['name']}")
+            if r.get("description"):
+                lines.append(f"    {r['description']}")
+            lines.append(
+                f"    Updated: {r.get('updated_at', '')[:10]}"
+                f" | Browse: {r.get('html_url', '')}"
+            )
         return "\n".join(lines)
 
 
 async def health_checks() -> list[tuple[str, bool]]:
-    """Check agent backend and git server availability."""
+    """Check Docker and Gitea availability."""
     checks = []
-    _, active_profile = coding_agent.get_active_profile()
 
-    # Agent backend availability
     try:
         if await coding_agent.is_available():
-            checks.append((f"[OK] Agent ({active_profile['label']})", True))
+            checks.append(("[OK] Coding Agent (Docker)", True))
         else:
             checks.append(("[WARN] Agent: backend not accessible", False))
     except Exception:
         checks.append(("[WARN] Agent: backend not installed", False))
 
-    # Git server
     try:
         if await gitea.is_available():
             ok = await gitea.ensure_setup()

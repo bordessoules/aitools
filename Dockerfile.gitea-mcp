@@ -1,0 +1,16 @@
+# Wrapper for official gitea-mcp server
+# Adds a shell so we can wait for the gateway to create the API token.
+# The token file is written by the gateway to /auth/gitea_token.
+
+FROM docker.gitea.com/gitea-mcp-server AS mcp
+
+FROM alpine:3
+COPY --from=mcp /app/gitea-mcp /usr/local/bin/gitea-mcp
+RUN apk add --no-cache ca-certificates
+
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["echo 'Waiting for Gitea token...' && \
+     while [ ! -f /auth/gitea_token ]; do sleep 2; done && \
+     export GITEA_ACCESS_TOKEN=$(cat /auth/gitea_token) && \
+     echo 'Token loaded, starting gitea-mcp...' && \
+     exec gitea-mcp -t http --host ${GITEA_HOST:-http://gitea:3000} --port ${GITEA_MCP_PORT:-8006}"]

@@ -28,6 +28,12 @@ services:
     container_name: mcp-gateway
     ports:
       - "${GATEWAY_PORT:-8000}:8000"
+      # Per-plugin MCP ports (composable tool access)
+      - "${WEB_PORT:-8001}:8001"
+      - "${KB_PORT:-8002}:8002"
+      - "${AGENT_PORT:-8003}:8003"
+      - "${SANDBOX_PORT:-8004}:8004"
+      - "${GITEA_PLUGIN_PORT:-8005}:8005"
     environment:
       # Service URLs (internal Docker network)
       - SEARXNG_URL=http://searxng:8080
@@ -64,15 +70,13 @@ services:
       - CODE_SANDBOX_MEMORY_LIMIT=${CODE_SANDBOX_MEMORY_LIMIT:-256m}
       - CODE_SANDBOX_CPU_LIMIT=${CODE_SANDBOX_CPU_LIMIT:-1.0}
 
-      # Coding Agent (pluggable: goose, aider)
-      - CODING_AGENT=${CODING_AGENT:-goose}
+      # Coding Agent
       - GOOSE_IMAGE=${GOOSE_IMAGE:-mcp-goose:latest}
-      - AIDER_IMAGE=${AIDER_IMAGE:-paulgauthier/aider:latest}
+      - QWEN_IMAGE=${QWEN_IMAGE:-mcp-qwen:latest}
+      - VIBE_IMAGE=${VIBE_IMAGE:-mcp-vibe:latest}
+      - KIMI_IMAGE=${KIMI_IMAGE:-mcp-kimi:latest}
       - GOOSE_TIMEOUT=${GOOSE_TIMEOUT:-300}
       - GOOSE_WORKSPACE=/app/workspace
-      - GOOSE_LLM_URL=${GOOSE_LLM_URL:-http://host.docker.internal:8100/v1}
-      - GOOSE_MODEL=${GOOSE_MODEL:-}
-      - GOOSE_API_KEY=${GOOSE_API_KEY:-}
       - GOOSE_MCP_GATEWAY_URL=${GOOSE_MCP_GATEWAY_URL:-http://gateway:8000}
 
       # Gitea Git Server (for persistent coding projects)
@@ -82,6 +86,13 @@ services:
       - GITEA_ADMIN_USER=${GITEA_ADMIN_USER:-goose}
       - GITEA_ADMIN_PASSWORD=${GITEA_ADMIN_PASSWORD:-goose-gitea-local}
       - GITEA_ADMIN_EMAIL=${GITEA_ADMIN_EMAIL:-goose@localhost}
+
+      # LLM inference (llamaswap auto-swaps models by name)
+      - LLM_HOST=${LLM_HOST:-http://host.docker.internal:8085}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-devstral}
+      - DEVSTRAL_MODEL=${DEVSTRAL_MODEL:-Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf}
+      - QWEN_CODER_MODEL=${QWEN_CODER_MODEL:-Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf}
+      - QWEN3_NEXT_MODEL=${QWEN3_NEXT_MODEL:-Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf}
 
       # Chat UI
       - CHAT_UI_PORT=${CHAT_UI_PORT:-3000}
@@ -93,6 +104,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Workspace for coding agent
       - ./workspace:/app/workspace
+      # Shared auth directory (gateway writes Gitea token here for gitea-mcp)
+      - ./auth:/app/auth
+      # Role definitions (hot-reload without rebuild)
+      - ./config/roles.yaml:/app/config/roles.yaml:ro
     depends_on:
       searxng:
         condition: service_healthy
@@ -339,6 +354,49 @@ services:
       retries: 3
 
   # ============================================================================
+  # GITEA MCP - Official Gitea MCP Server (optional, included in: standard, cpu, gpu)
+  # ============================================================================
+  # Exposes 60+ Gitea tools via MCP protocol (repos, PRs, issues, files, wiki...).
+  # The gateway writes its API token to ./auth/gitea_token on first boot.
+  # This service waits for that file, then starts in HTTP mode.
+  #
+  # Agents and Chat UI connect to this as an MCP endpoint.
+  # For a lighter alternative, the gateway's built-in gitea_plugin (port 8005)
+  # provides 8 focused git/PR tools without a separate container.
+  gitea-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.gitea-mcp
+    image: mcp-gitea-mcp:latest
+    container_name: mcp-gitea-mcp
+    profiles:
+      - standard
+      - cpu
+      - gpu
+    environment:
+      - GITEA_HOST=http://gitea:3000
+      - GITEA_MCP_PORT=8006
+    ports:
+      - "${GITEA_MCP_PORT:-8006}:8006"
+    volumes:
+      - ./auth:/auth:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+      gitea:
+        condition: service_healthy
+    networks:
+      - mcp-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # LLM INFERENCE (external — see docker-compose.llm.yaml)
+  # ============================================================================
+  # llama-swap runs separately: docker compose -f docker-compose.llm.yaml up -d
+  # Gateway connects via LLM_HOST env var (default: http://host.docker.internal:8085)
+  # Models auto-download from HuggingFace — see data/llamaswap-config.yaml
+
+  # ============================================================================
   # GOOSE IMAGE BUILD (optional, builds custom Goose image with Python/Node)
   # ============================================================================
   # The base Goose image has no language runtimes (no Python, no Node).
@@ -347,12 +405,43 @@ services:
   #
   # Build once: docker compose build goose-image
   # The gateway uses GOOSE_IMAGE=mcp-goose:latest by default.
+  # Build once: docker compose --profile build build
   goose-image:
     build:
       context: .
       dockerfile: Dockerfile.goose
     image: mcp-goose:latest
     container_name: mcp-goose-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  qwen-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.qwen
+    image: mcp-qwen:latest
+    container_name: mcp-qwen-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  vibe-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.vibe
+    image: mcp-vibe:latest
+    container_name: mcp-vibe-build
+    profiles:
+      - build
+    entrypoint: ["echo", "Image built successfully"]
+
+  kimi-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.kimi
+    image: mcp-kimi:latest
+    container_name: mcp-kimi-build
     profiles:
       - build
     entrypoint: ["echo", "Image built successfully"]

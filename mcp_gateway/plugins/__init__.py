@@ -9,6 +9,9 @@ Each plugin is a Python module that exports a PLUGIN dict:
         "register": register,             # callable(mcp) -> None
         "health_checks": health_checks,   # async callable() -> list[(str, bool)]
     }
+
+Plugins can be loaded onto a single FastMCP (all-in-one mode) or onto
+separate FastMCP instances (multi-port mode) via load_plugins_multi().
 """
 
 import importlib
@@ -25,6 +28,7 @@ PLUGIN_MODULES = [
     "knowledge",
     "sandbox",
     "agent",
+    "gitea_plugin",
 ]
 
 
@@ -37,12 +41,9 @@ def _is_enabled(plugin: dict) -> bool:
     return os.getenv(env_var, default).lower() == "true"
 
 
-def load_plugins(mcp) -> list[dict]:
-    """Import enabled plugins and register their tools with FastMCP.
-
-    Returns list of loaded PLUGIN dicts (for health checks later).
-    """
-    loaded = []
+def _import_plugins() -> list[tuple[str, dict]]:
+    """Import all plugin modules and return (name, PLUGIN dict) for enabled ones."""
+    result = []
 
     for module_name in PLUGIN_MODULES:
         try:
@@ -60,10 +61,50 @@ def load_plugins(mcp) -> list[dict]:
             log.info("Plugin '%s' disabled via %s", plugin["name"], plugin.get("env_var"))
             continue
 
+        result.append((module_name, plugin))
+
+    return result
+
+
+def load_plugins(mcp) -> list[dict]:
+    """Import enabled plugins and register their tools with a single FastMCP.
+
+    Returns list of loaded PLUGIN dicts (for health checks later).
+    """
+    loaded = []
+
+    for module_name, plugin in _import_plugins():
         try:
             plugin["register"](mcp)
             loaded.append(plugin)
             log.info("Plugin '%s' loaded", plugin["name"])
+        except Exception as e:
+            log.error("Plugin '%s' register failed: %s", plugin["name"], e)
+
+    return loaded
+
+
+def load_plugins_multi(mcp_instances: dict) -> list[dict]:
+    """Import enabled plugins, register each onto its own FastMCP instance.
+
+    Args:
+        mcp_instances: Dict mapping plugin name -> FastMCP instance.
+                       Plugins not in the dict are skipped.
+
+    Returns list of loaded PLUGIN dicts (for health checks later).
+    """
+    loaded = []
+
+    for module_name, plugin in _import_plugins():
+        mcp = mcp_instances.get(module_name)
+        if mcp is None:
+            log.warning("Plugin '%s' has no FastMCP instance, skipping", module_name)
+            continue
+
+        try:
+            plugin["register"](mcp)
+            loaded.append(plugin)
+            log.info("Plugin '%s' loaded on dedicated port", plugin["name"])
         except Exception as e:
             log.error("Plugin '%s' register failed: %s", plugin["name"], e)
 
