@@ -108,15 +108,22 @@ def register(mcp):
         """
         return roles.format_roles_list()
 
+    # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
+
     @mcp.tool()
     async def list_projects() -> str:
         """
-        List persistent coding projects stored in Gitea.
+        List persistent projects.
 
         Each project is a git repository with full version history.
+
+        Returns:
+            List of projects with names, descriptions, last updated, and web URLs
         """
         if not await gitea.is_available():
-            return "Error: Gitea is not available."
+            return "Error: Git server is not available. Projects require git server to be running."
 
         repos = await gitea.list_repos()
         if not repos:
@@ -145,21 +152,21 @@ async def health_checks() -> list[tuple[str, bool]]:
         if await coding_agent.is_available():
             checks.append(("[OK] Coding Agent (Docker)", True))
         else:
-            checks.append(("[WARN] Coding Agent: Docker not accessible", False))
+            checks.append(("[WARN] Agent: backend not accessible", False))
     except Exception:
-        checks.append(("[WARN] Coding Agent: docker package not installed", False))
+        checks.append(("[WARN] Agent: backend not installed", False))
 
     try:
         if await gitea.is_available():
             ok = await gitea.ensure_setup()
             if ok:
-                checks.append(("[OK] Gitea (Git Server)", True))
+                checks.append(("[OK] Git Server", True))
             else:
-                checks.append(("[WARN] Gitea reachable but setup failed", False))
+                checks.append(("[WARN] Git server reachable but setup failed", False))
         else:
-            checks.append(("[INFO] Gitea not reachable - project persistence disabled", False))
+            checks.append(("[INFO] Git server not reachable - project persistence disabled", False))
     except Exception:
-        checks.append(("[INFO] Gitea not available", False))
+        checks.append(("[INFO] Git server not available", False))
 
     return checks
 

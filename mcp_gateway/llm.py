@@ -8,6 +8,7 @@ and LLM calls. Used by fetch.py (web extraction) and documents.py (Docling).
 import httpx
 
 from . import config
+from . import models_config
 from .logger import get_logger
 
 log = get_logger("llm")
@@ -50,7 +51,7 @@ def build_vlm_params(max_tokens: int | None = None) -> dict:
     Returns:
         Dict with model + sampling parameters
     """
-    params = {"model": config.VISION_MODEL, **_sampling_params()}
+    params = {"model": models_config.get_vision_model()["name"], **_sampling_params()}
 
     # Only send max_tokens when explicitly requested by the caller.
     # Otherwise vLLM fills remaining context dynamically.
@@ -66,8 +67,9 @@ def build_auth_headers() -> dict:
     Returns:
         Dict with Authorization header if API key is configured, empty dict otherwise
     """
-    if config.VISION_API_KEY and config.VISION_API_KEY != API_KEY_PLACEHOLDER:
-        return {"Authorization": f"Bearer {config.VISION_API_KEY}"}
+    vision = models_config.get_vision_model()
+    if vision["key"] and vision["key"] != API_KEY_PLACEHOLDER:
+        return {"Authorization": f"Bearer {vision['key']}"}
     return {}
 
 
@@ -82,7 +84,7 @@ def build_llm_request(messages: list, max_tokens: int | None = None) -> dict:
         Dict ready to POST to /chat/completions
     """
     params = {
-        "model": config.VISION_MODEL,
+        "model": models_config.get_vision_model()["name"],
         "messages": messages,
         "stream": False,
         **_sampling_params(),
@@ -106,8 +108,9 @@ async def call_llm(messages: list, max_tokens: int | None = None) -> str | None:
     Returns:
         LLM response text, or None on failure
     """
-    if not config.VISION_API_URL:
-        log.warning("VISION_API_URL not configured")
+    vision = models_config.get_vision_model()
+    if not vision["url"]:
+        log.warning("No vision model configured in models.yaml")
         return None
 
     params = build_llm_request(messages, max_tokens)
@@ -115,7 +118,7 @@ async def call_llm(messages: list, max_tokens: int | None = None) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=config.TIMEOUT_LLM) as client:
             resp = await client.post(
-                f"{config.VISION_API_URL}/chat/completions", json=params
+                f"{vision['url']}/chat/completions", json=params
             )
             resp.raise_for_status()
             data = resp.json()

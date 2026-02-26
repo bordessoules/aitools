@@ -5,12 +5,13 @@ Each plugin runs on its own port for composable tool access:
   Port 8000  (all-in-one)  all tools — backward compatible
   Port 8001  (web)         search, fetch, fetch_section, cache
   Port 8002  (knowledge)   kb_search, kb_list, kb_remove, add_to_knowledge_base
-  Port 8003  (agent)       delegate_coding_agent, check_coding_job, list_agents, list_projects
+  Port 8003  (agent)       delegate_to_agent, await_agent, list_roles, list_projects
   Port 8004  (sandbox)     run_code
 
 Clients and agents connect only to the ports they need.
 Claude Code / Chat UI connect to 8000 (all tools).
 Coding agents connect to 8001+8002 (web+KB, no delegate).
+
 
 WORKFLOW:
 1. kb_search(query) - Check knowledge base first (FAST)

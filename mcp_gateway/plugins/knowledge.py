@@ -102,7 +102,7 @@ def register(mcp):
 
         FAST and FREE - always call this FIRST before web search!
         This searches through all documents added with add_to_knowledge_base()
-        and any files preloaded from the preload folder.
+        and any pre-indexed reference material.
 
         Use this when:
         - Starting any research task (check what you already know)

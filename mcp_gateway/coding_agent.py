@@ -34,6 +34,7 @@ import uuid
 from pathlib import Path
 
 from . import config
+from . import models_config
 from .logger import get_logger
 
 log = get_logger("coding_agent")
@@ -105,7 +106,7 @@ MODEL_ALIASES = ("devstral", "qwen-coder",
 def _mcp_base_url() -> str:
     """Base MCP gateway URL adjusted for network_mode=host containers.
 
-    Docker DNS names (e.g. "gateway") don’t resolve with network_mode=host,
+    Docker DNS names (e.g. "gateway") don't resolve with network_mode=host,
     so we replace with localhost.
     """
     url = cfg("GOOSE_MCP_GATEWAY_URL", config.GOOSE_MCP_GATEWAY_URL)
@@ -342,7 +343,6 @@ def _build_kimi_env(model: str | None = None) -> dict:
 # =============================================================================
 # AGENT PROFILES — 1 per CLI, model selected at dispatch time
 # =============================================================================
-
 
 
 def _apply_llm_overrides(env: dict, llm_url: str | None, api_key: str | None) -> dict:
@@ -805,6 +805,7 @@ async def run_task_async(task: str, workspace: str | None = None,
         "finished_at": None,
         "exit_code": None,
         "output": None,
+        "await_count": 0,
     }
     _save_job(job_id)
 
@@ -819,7 +820,7 @@ async def run_task_async(task: str, workspace: str | None = None,
         f"Agent: {profile['label']}\n"
         f"Project: {project_info}\n"
         f"Branch: {branch}\n"
-        f"\nUse check_coding_job('{job_id}') to poll for results."
+        f"\nUse check_agent_job('{job_id}') to poll for results."
     )
 
 

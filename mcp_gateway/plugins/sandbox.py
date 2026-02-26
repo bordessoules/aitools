@@ -15,21 +15,15 @@ def register(mcp):
     @mcp.tool()
     async def run_code(language: str, code: str) -> str:
         """
-        Execute code in a secure, isolated Docker sandbox.
+        Execute code in a secure, isolated sandbox.
 
-        Runs code in a fresh container with NO network access, memory/CPU limits,
+        Runs code in a fresh environment with NO network access, resource limits,
         and automatic cleanup. Use this for:
         - Running Python or JavaScript code snippets
         - Testing algorithms or data processing
         - Verifying calculations or transformations
 
         Supported languages: "python" (or "py"), "javascript" (or "js", "node")
-
-        Security: Each execution runs in a fresh container with:
-        - No network access (completely isolated)
-        - 256MB memory limit (configurable)
-        - 30-second timeout (configurable)
-        - Container auto-removed after execution
 
         Args:
             language: Programming language ("python" or "javascript")
