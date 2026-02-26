@@ -820,7 +820,7 @@ async def run_task_async(task: str, workspace: str | None = None,
         f"Agent: {profile['label']}\n"
         f"Project: {project_info}\n"
         f"Branch: {branch}\n"
-        f"\nUse check_agent_job('{job_id}') to poll for results."
+        f"\nCall check_agent_job('{job_id}') to poll for results."
     )
 
 
@@ -973,7 +973,7 @@ async def await_agent(job_id: str) -> str:
     elapsed = int(time.monotonic() - job["started_at"])
     return (
         f"Agent still working ({elapsed}s elapsed). "
-        f"Call await_agent('{job_id}') again to check."
+        f"Call check_agent_job('{job_id}') again to check."
     )
 
 
