@@ -2,7 +2,7 @@
 
 Provides tools:
 - delegate_to_agent(role, task, project) -- fire-and-forget, returns job_id
-- await_agent(job_id) -- progressive-backoff check (35s, 40s, 45s...)
+- check_agent_job(job_id) -- progressive-backoff poll (35s, 40s, 45s...)
 - list_roles() -- show available roles
 - list_projects() -- show Gitea-backed projects
 
@@ -32,7 +32,7 @@ def register(mcp):
 
         The agent runs in an isolated Docker container with access to specific
         tools based on its role. Returns immediately with a job reference.
-        Use await_agent(job_id) to check when the agent finishes.
+        Use check_agent_job(job_id) to poll for results.
 
         Use list_roles() to see available roles and their capabilities.
 
@@ -78,13 +78,13 @@ def register(mcp):
             f"  Role: {role}\n"
             f"  Project: {project}\n"
             f"  Job: {job_id}\n\n"
-            f"Use await_agent(job_id='{job_id}') to check when it finishes."
+            f"Call check_agent_job(job_id='{job_id}') to poll for results."
         )
 
     @mcp.tool()
-    async def await_agent(job_id: str) -> str:
+    async def check_agent_job(job_id: str) -> str:
         """
-        Wait for an agent to finish with progressive backoff.
+        Check on an agent job with progressive backoff.
 
         Each call holds the connection for an increasing amount of time
         (35s, 40s, 45s, ...) before returning. If the agent finishes

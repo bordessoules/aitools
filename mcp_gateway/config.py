@@ -299,7 +299,7 @@ CODE_SANDBOX_CPU_LIMIT = float(os.getenv("CODE_SANDBOX_CPU_LIMIT", "1.0"))
 # =============================================================================
 # CODING AGENT
 # =============================================================================
-# delegate_to_agent() / await_agent() tools — spawns a coding agent in Docker.
+# delegate_to_agent() / check_agent_job() tools — spawns a coding agent in Docker.
 # Agent connects to LLM endpoint and to MCP gateway for tools.
 # Requires Docker socket access (same as code execution).
 
