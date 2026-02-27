@@ -48,6 +48,7 @@ services:
       # Docling configuration
       - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
+      - DOCLING_VLM_CONCURRENCY=${DOCLING_VLM_CONCURRENCY:-1}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
       # Browser settings
@@ -191,6 +192,8 @@ services:
     environment:
       - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
       - DOCLING_SERVE_MAX_SYNC_WAIT=600
+      - DOCLING_SERVE_ENG_LOC_NUM_WORKERS=4
+      - OMP_NUM_THREADS=12  # Set to number of physical CPU cores (not threads)
     volumes:
       # Persist HF model downloads (including Granite-258M for VLM pipeline)
       - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
