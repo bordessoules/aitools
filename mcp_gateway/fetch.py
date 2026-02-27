@@ -659,7 +659,7 @@ async def describe_image(url: str, prompt: str = "Describe this image in detail.
     """Describe an image using the Vision API.
 
     Downloads the image, base64-encodes it, and sends it to the configured
-    vision model for description. Requires a vision endpoint in models.yaml.
+    vision model for description. Requires a model with vision: true in config/models/.
 
     Args:
         url: Direct URL to the image file

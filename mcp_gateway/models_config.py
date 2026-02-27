@@ -1,11 +1,13 @@
-"""Unified LLM model & endpoint configuration.
+"""LLM model configuration — one YAML file per model.
 
-Loads config/models.yaml which defines:
-  - endpoints: named LLM servers (url + key)
-  - models: named model configs pointing to an endpoint
-  - defaults: which model to use for agent vs vision
+Scans config/models/*.yaml. Each file defines a model:
+  - endpoint: LLM API base URL
+  - key: API key (default: "not-needed")
+  - name: model name sent to endpoint (default: filename)
+  - vision: true if this is the vision model
+  - sampling: optional per-model sampling params
 
-Each resolved model returns: {"url": ..., "key": ..., "name": ...}
+Each resolved model returns: {"url": ..., "key": ..., "name": ..., "sampling": ...}
 """
 
 import os
@@ -17,98 +19,72 @@ from .logger import get_logger
 
 log = get_logger("models_config")
 
-_MODELS_FILE = Path(os.getenv("MODELS_FILE", "./config/models.yaml"))
-_config: dict | None = None
+_MODELS_DIR = Path(os.getenv("MODELS_DIR", "./config/models"))
+_cache: dict[str, dict] | None = None
+_vision_name: str | None = None
 
 
-def _load() -> dict:
-    """Load and cache models.yaml."""
-    global _config
-    if _config is not None:
-        return _config
+def _load() -> dict[str, dict]:
+    """Load and cache all model YAML files from the models directory."""
+    global _cache, _vision_name
+    if _cache is not None:
+        return _cache
 
-    if not _MODELS_FILE.exists():
-        log.warning("models.yaml not found at %s — using empty config", _MODELS_FILE)
-        _config = {"endpoints": {}, "models": {}, "defaults": {}}
-        return _config
+    _cache = {}
+    _vision_name = None
 
-    with open(_MODELS_FILE) as f:
-        _config = yaml.safe_load(f) or {}
+    if not _MODELS_DIR.exists():
+        log.warning("Models dir not found at %s", _MODELS_DIR)
+        return _cache
 
-    # Ensure sections exist
-    _config.setdefault("endpoints", {})
-    _config.setdefault("models", {})
-    _config.setdefault("defaults", {})
+    for f in sorted(_MODELS_DIR.glob("*.yaml")):
+        try:
+            with open(f) as fh:
+                data = yaml.safe_load(fh) or {}
+            name = f.stem
+            url = data.get("endpoint", "").rstrip("/")
+            _cache[name] = {
+                "url": url,
+                "key": data.get("key", "not-needed"),
+                "name": data.get("name", name),
+                "sampling": data.get("sampling", {}),
+            }
+            if data.get("vision"):
+                _vision_name = name
+        except Exception as e:
+            log.error("Failed to load model %s: %s", f.name, e)
 
-    log.info(
-        "Loaded models.yaml: %d endpoints, %d models",
-        len(_config["endpoints"]),
-        len(_config["models"]),
-    )
-    return _config
+    log.info("Loaded %d model(s) from %s", len(_cache), _MODELS_DIR)
+    return _cache
 
 
 def reload():
-    """Force reload models.yaml (e.g. after editing)."""
-    global _config
-    _config = None
+    """Force reload all model configs."""
+    global _cache
+    _cache = None
     return _load()
 
 
 def resolve(model_name: str) -> dict:
-    """Resolve a model name to {url, key, name}.
+    """Resolve a model name to {url, key, name, sampling}.
 
-    Looks up the model in models.yaml, finds its endpoint,
-    and returns the full connection info.
+    The model_name must match a filename in config/models/ (minus .yaml).
     """
-    cfg = _load()
-    model_cfg = cfg["models"].get(model_name)
-    if not model_cfg:
-        raise KeyError(f"Model '{model_name}' not found in models.yaml")
-
-    endpoint_name = model_cfg.get("endpoint")
-    if not endpoint_name:
-        raise KeyError(f"Model '{model_name}' has no endpoint defined")
-
-    endpoint = cfg["endpoints"].get(endpoint_name)
-    if not endpoint:
-        raise KeyError(
-            f"Endpoint '{endpoint_name}' (used by model '{model_name}') "
-            f"not found in models.yaml"
-        )
-
-    return {
-        "url": endpoint["url"],
-        "key": endpoint.get("key", "not-needed"),
-        "name": model_cfg.get("name", model_name),
-    }
-
-
-def get_agent_model() -> dict:
-    """Get the default agent model config: {url, key, name}."""
-    cfg = _load()
-    model_name = cfg["defaults"].get("agent")
-    if not model_name:
-        log.warning("No defaults.agent in models.yaml")
-        return {"url": "", "key": "not-needed", "name": ""}
-    return resolve(model_name)
+    models = _load()
+    model = models.get(model_name)
+    if not model:
+        raise KeyError(f"Model '{model_name}' not found in {_MODELS_DIR}")
+    return model
 
 
 def get_vision_model() -> dict:
-    """Get the default vision model config: {url, key, name}."""
-    cfg = _load()
-    model_name = cfg["defaults"].get("vision")
-    if not model_name:
-        log.warning("No defaults.vision in models.yaml")
-        return {"url": "", "key": "not-needed", "name": ""}
-    return resolve(model_name)
+    """Get the vision model (the one with vision: true)."""
+    _load()
+    if not _vision_name:
+        return {"url": "", "key": "not-needed", "name": "", "sampling": {}}
+    return _cache[_vision_name]
 
 
-def list_endpoints() -> dict:
-    """Return all configured endpoints."""
-    return _load()["endpoints"]
-
-
-def list_models() -> dict:
+def list_models() -> dict[str, dict]:
     """Return all configured models."""
-    return _load()["models"]
+    return dict(_load())

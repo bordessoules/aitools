@@ -1,0 +1,2 @@
+endpoint: http://host.docker.internal:8085/v1
+key: not-needed

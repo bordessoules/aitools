@@ -1,0 +1,8 @@
+description: Write code, modify files, commit changes to a project
+cli: vibe
+model: qwen3-coder-next
+image: mcp-vibe:latest
+mcp_ports: [web, gitea]
+system_prompt: >
+  You are a coding agent. Write clean, well-structured code.
+  Commit your changes with clear messages.

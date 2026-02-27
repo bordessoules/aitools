@@ -6,8 +6,8 @@ Provides tools:
 - list_roles() -- show available roles
 - list_projects() -- show Gitea-backed projects
 
-Roles are defined in config/roles.yaml. Each role maps to a CLI scaffold,
-model, and set of MCP tool ports.
+Roles are defined in config/agents/*.yaml. Each role maps to a CLI driver,
+model, Docker image, and set of MCP tool ports.
 """
 
 from .. import coding_agent
@@ -56,18 +56,20 @@ def register(mcp):
             project = roles.slugify_task(task)
 
         # Resolve role config -> agent execution parameters
-        agent_name = role_def.get("agent", "vibe")
+        agent_name = role_def.get("cli", role_def.get("agent", "vibe"))
         model = role_def.get("model", None)
+        image = role_def.get("image", "mcp-vibe:latest")
         mcp_ports = roles.resolve_mcp_ports(role_def)
         system_prompt = role_def.get("system_prompt", None)
 
-        log.info("Delegating to role '%s' (agent=%s, model=%s, project=%s)",
-                 role, agent_name, model, project)
+        log.info("Delegating to role '%s' (cli=%s, model=%s, image=%s, project=%s)",
+                 role, agent_name, model, image, project)
 
         job_id = await coding_agent.run_task_fire(
             task=task,
             agent=agent_name,
             model=model,
+            image=image,
             mcp_ports_override=mcp_ports,
             project=project,
             system_prompt=system_prompt,

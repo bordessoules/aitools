@@ -1,0 +1,8 @@
+description: Review code and repos, give architectural feedback
+cli: vibe
+model: devstral
+image: mcp-vibe:latest
+mcp_ports: [web, knowledge_base, gitea]
+system_prompt: >
+  You are a code reviewer. Examine code carefully, check for bugs,
+  style issues, and potential improvements. Be constructive and specific.

@@ -18,25 +18,13 @@ API_KEY_PLACEHOLDER = "not-needed"
 
 
 def _sampling_params() -> dict:
-    """Build sampling params dict from config.
+    """Build sampling params from the vision model's YAML config.
 
-    Returns only the params that are explicitly set (not None),
-    so the LLM backend uses its own defaults for unset params.
+    Reads the 'sampling' section of the model file.
+    Returns only params that are explicitly set.
     """
-    params = {}
-    if config.VLM_TEMPERATURE is not None:
-        params["temperature"] = config.VLM_TEMPERATURE
-    if config.VLM_TOP_P is not None:
-        params["top_p"] = config.VLM_TOP_P
-    if config.VLM_TOP_K is not None:
-        params["top_k"] = config.VLM_TOP_K
-    if config.VLM_MIN_P is not None:
-        params["min_p"] = config.VLM_MIN_P
-    if config.VLM_PRESENCE_PENALTY is not None:
-        params["presence_penalty"] = config.VLM_PRESENCE_PENALTY
-    if config.VLM_REPETITION_PENALTY is not None:
-        params["repetition_penalty"] = config.VLM_REPETITION_PENALTY
-    return params
+    sampling = models_config.get_vision_model().get("sampling", {})
+    return {k: v for k, v in sampling.items() if v is not None}
 
 
 def build_vlm_params(max_tokens: int | None = None) -> dict:
@@ -110,7 +98,7 @@ async def call_llm(messages: list, max_tokens: int | None = None) -> str | None:
     """
     vision = models_config.get_vision_model()
     if not vision["url"]:
-        log.warning("No vision model configured in models.yaml")
+        log.warning("No vision model configured (no model with vision: true)")
         return None
 
     params = build_llm_request(messages, max_tokens)

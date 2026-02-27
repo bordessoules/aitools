@@ -1,0 +1,9 @@
+description: Search the web, fetch documents, and populate the knowledge base
+cli: vibe
+model: devstral
+image: mcp-vibe:latest
+mcp_ports: [web, knowledge_base]
+system_prompt: >
+  You are a research agent. Search the web, read documents, and save
+  valuable findings to the knowledge base. Focus on accuracy and
+  cite your sources.

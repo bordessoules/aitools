@@ -71,36 +71,10 @@ def cfg(key: str, default: str = "") -> str:
 # MODEL + ENDPOINT HELPERS
 # =============================================================================
 
-def _llm_host() -> str:
-    """Single LLM endpoint — llamaswap auto-swaps models by name."""
-    return cfg("LLM_HOST", "http://host.docker.internal:8085")
-
-
-def _resolve_model(model: str | None) -> str:
-    """Resolve a model alias (e.g. 'devstral') to the full GGUF filename."""
-    if not model:
-        model = cfg("DEFAULT_MODEL", "devstral")
-    aliases = {
-        "devstral": cfg("DEVSTRAL_MODEL",
-                        "Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf"),
-        "qwen-coder": cfg("QWEN_CODER_MODEL",
-                          "Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf"),
-        # Qwen3.5 profiles — same GGUF, different llamaswap profiles (sampling).
-        # Use profile aliases so llamaswap routes to the right config.
-        "qwen35-code": "qwen35-code",
-        "qwen35": cfg("QWEN35_MODEL",
-                      "Qwen3.5-35B-A3B-MXFP4_MOE.gguf"),
-        "qwen35-fast": "qwen35-fast",
-        "qwen35-reason": "qwen35-reason",
-        "qwen3-next": cfg("QWEN3_NEXT_MODEL",
-                          "Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf"),
-    }
-    return aliases.get(model, model)
-
-
-MODEL_ALIASES = ("devstral", "qwen-coder",
-                 "qwen35-code", "qwen35", "qwen35-fast", "qwen35-reason",
-                 "qwen3-next")
+def _resolve_llm(model: str | None) -> dict:
+    """Resolve model name to {url, key, name} via config/models/*.yaml."""
+    name = model or "devstral"
+    return models_config.resolve(name)
 
 
 def _mcp_base_url() -> str:
@@ -133,12 +107,12 @@ def _mcp_sse_urls(ports: list[int]) -> list[str]:
 # =============================================================================
 # Each returns a CLI args list. The Docker image's entrypoint handles the rest.
 # max_turns=0 means "don't pass --max-turns" (agent uses its default).
-# model=None means "use DEFAULT_MODEL from .env" (resolved by _resolve_model).
+# model=None means "use default model" (resolved by _resolve_llm).
 
 def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None,
                      mcp_ports: list[int] | None = None) -> list[str]:
     """Goose developer — full coding agent with local file tools + MCP gateway."""
-    model = _resolve_model(model)
+    model = _resolve_llm(model)["name"]
     cmd = [
         "run", "--provider", "openai", "--model", model,
         "--with-builtin", "developer",
@@ -155,7 +129,7 @@ def _build_goose_cmd(task: str, max_turns: int = 0, model: str | None = None,
 def _build_goose_reviewer_cmd(task: str, max_turns: int = 0, model: str | None = None,
                               mcp_ports: list[int] | None = None) -> list[str]:
     """Goose reviewer — MCP gateway only, no --with-builtin developer."""
-    model = _resolve_model(model)
+    model = _resolve_llm(model)["name"]
     cmd = [
         "run", "--provider", "openai", "--model", model,
         "--no-session", "--no-profile", "--quiet",
@@ -277,31 +251,35 @@ def _build_kimi_cmd(task: str, max_turns: int = 0, model: str | None = None,
 # =============================================================================
 # ENVIRONMENT BUILDERS — one per CLI family
 # =============================================================================
-# All local builders accept model=None (resolved to DEFAULT_MODEL).
+# All local builders accept model=None (resolved via config/models/*.yaml).
 # Cloud builders ignore the model parameter.
 
+def _strip_v1(url: str) -> str:
+    """Strip trailing /v1 from URL (some CLIs want base host, not OpenAI path)."""
+    url = url.rstrip("/")
+    return url[:-3] if url.endswith("/v1") else url
+
+
 def _build_goose_local_env(model: str | None = None) -> dict:
-    """Goose with local LLM via llamaswap."""
-    host = _llm_host()
-    model = _resolve_model(model)
+    """Goose with local LLM."""
+    llm = _resolve_llm(model)
     return {
         "GOOSE_PROVIDER": "openai",
-        "GOOSE_MODEL": model,
-        "OPENAI_HOST": host,
+        "GOOSE_MODEL": llm["name"],
+        "OPENAI_HOST": _strip_v1(llm["url"]),
         "OPENAI_BASE_PATH": "/v1/chat/completions",
-        "OPENAI_API_KEY": "not-needed",
+        "OPENAI_API_KEY": llm["key"],
         "GOOSE_PLANNER_PROVIDER": "openai",
-        "GOOSE_PLANNER_MODEL": model,
+        "GOOSE_PLANNER_MODEL": llm["name"],
     }
 
 
 def _build_vibe_local_env(model: str | None = None) -> dict:
-    """Vibe with local LLM via llamaswap."""
-    host = _llm_host()
-    model = _resolve_model(model)
+    """Vibe with local LLM."""
+    llm = _resolve_llm(model)
     return {
-        "VIBE_API_BASE": host,
-        "VIBE_MODEL_NAME": model,
+        "VIBE_API_BASE": _strip_v1(llm["url"]),
+        "VIBE_MODEL_NAME": llm["name"],
         "VIBE_KEY_VAR": "",
         "VIBE_MAX_TOKENS": "65536",
         "PYTHONIOENCODING": "utf-8",
@@ -310,13 +288,15 @@ def _build_vibe_local_env(model: str | None = None) -> dict:
 
 
 def _build_qwen_local_env(model: str | None = None) -> dict:
-    """Qwen Code with local LLM via llamaswap."""
-    host = _llm_host()
-    model = _resolve_model(model)
+    """Qwen Code with local LLM."""
+    llm = _resolve_llm(model)
+    url = llm["url"].rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
     return {
-        "OPENAI_API_KEY": "not-needed",
-        "OPENAI_BASE_URL": host + "/v1",
-        "OPENAI_MODEL": model,
+        "OPENAI_API_KEY": llm["key"],
+        "OPENAI_BASE_URL": url,
+        "OPENAI_MODEL": llm["name"],
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     }
@@ -379,56 +359,19 @@ def _apply_llm_overrides(env: dict, llm_url: str | None, api_key: str | None) ->
     return env
 
 
-AGENT_PROFILES = {
-    "goose": {
-        "label": "Goose Developer",
-        "description": "Goose coding agent — local file tools + MCP gateway.",
-        "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
-        "build_cmd": _build_goose_cmd,
-        "build_env": _build_goose_local_env,
-        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.SANDBOX_PORT, config.GITEA_PLUGIN_PORT],
-    },
-    "goose-reviewer": {
-        "label": "Goose Reviewer",
-        "description": "Goose review-only — MCP gateway tools (search, fetch, gitea). No local files.",
-        "image": lambda: cfg("GOOSE_IMAGE", config.GOOSE_IMAGE),
-        "build_cmd": _build_goose_reviewer_cmd,
-        "build_env": _build_goose_local_env,
-        "mcp_ports": [config.WEB_PORT, config.KB_PORT, config.GITEA_PLUGIN_PORT],
-    },
-    "vibe": {
-        "label": "Mistral Vibe",
-        "description": "Mistral Vibe CLI — local LLM + MCP gateway tools.",
-        "image": lambda: cfg("VIBE_IMAGE", "mcp-vibe:latest"),
-        "build_cmd": _build_vibe_cmd,
-        "build_env": _build_vibe_local_env,
-        "mcp_ports": [config.WEB_PORT],
-    },
-    "qwen": {
-        "label": "Qwen Code",
-        "description": "Qwen Code CLI — local LLM + MCP gateway tools.",
-        "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
-        "build_cmd": _build_qwen_local_cmd,
-        "build_env": _build_qwen_local_env,
-        "mcp_ports": [config.WEB_PORT],
-    },
-    "qwen-cloud": {
-        "label": "Qwen Code (Cloud)",
-        "description": "Qwen Code CLI — qwen.ai cloud API. Free tier. Needs DASHSCOPE_API_KEY.",
-        "image": lambda: cfg("QWEN_IMAGE", "mcp-qwen:latest"),
-        "build_cmd": _build_qwen_cloud_cmd,
-        "build_env": _build_qwen_cloud_env,
-        "mcp_ports": [config.WEB_PORT],
-    },
-    "kimi": {
-        "label": "Kimi Code",
-        "description": "Kimi Code CLI — kimi.com cloud + MCP gateway tools. Needs KIMI_API_KEY.",
-        "image": lambda: cfg("KIMI_IMAGE", "mcp-kimi:latest"),
-        "build_cmd": _build_kimi_cmd,
-        "build_env": _build_kimi_env,
-        "mcp_ports": [config.WEB_PORT],
-    },
+# CLI_DRIVERS — maps CLI name to command/env builder functions.
+# Everything else (image, label, description, mcp_ports) lives in config/agents/*.yaml.
+CLI_DRIVERS = {
+    "goose":          {"build_cmd": _build_goose_cmd,          "build_env": _build_goose_local_env},
+    "goose-reviewer": {"build_cmd": _build_goose_reviewer_cmd, "build_env": _build_goose_local_env},
+    "vibe":           {"build_cmd": _build_vibe_cmd,           "build_env": _build_vibe_local_env},
+    "qwen":           {"build_cmd": _build_qwen_local_cmd,     "build_env": _build_qwen_local_env},
+    "qwen-cloud":     {"build_cmd": _build_qwen_cloud_cmd,     "build_env": _build_qwen_cloud_env},
+    "kimi":           {"build_cmd": _build_kimi_cmd,           "build_env": _build_kimi_env},
 }
+
+# Backward compat alias
+AGENT_PROFILES = CLI_DRIVERS
 
 
 # =============================================================================
@@ -660,13 +603,14 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
                               branch: str, max_turns: int,
                               system_prompt: str | None,
                               model: str | None = None,
+                              image: str | None = None,
                               llm_url: str | None = None,
                               api_key: str | None = None,
                               mcp_ports_override: list[int] | None = None):
     """Background coroutine that runs an agent job."""
     job = _jobs[job_id]
-    profile = AGENT_PROFILES.get(agent_name, AGENT_PROFILES["goose"])
-    image = profile["image"]()
+    driver = CLI_DRIVERS.get(agent_name, CLI_DRIVERS["goose"])
+    image = image or "mcp-vibe:latest"
 
     try:
         job["status"] = "running"
@@ -707,12 +651,12 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
         container = await asyncio.to_thread(
             client.containers.run,
             image=image,
-            command=profile["build_cmd"](full_task, max_turns, model=model,
-                                           mcp_ports=mcp_ports_override or profile.get("mcp_ports")),
+            command=driver["build_cmd"](full_task, max_turns, model=model,
+                                        mcp_ports=mcp_ports_override),
             volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
             working_dir="/workspace",
             network_mode="host",
-            environment=_apply_llm_overrides(profile["build_env"](model=model), llm_url, api_key),
+            environment=_apply_llm_overrides(driver["build_env"](model=model), llm_url, api_key),
             extra_hosts={"host.docker.internal": "host-gateway"},
             mem_limit=config.GOOSE_MEMORY_LIMIT,
             remove=False, stdout=True, stderr=True, detach=True,
@@ -739,7 +683,7 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
         git_info = ""
         if clone_url:
             git_info = "\n" + await _git_post_task(
-                client, image, host_workspace, branch, task, profile["label"])
+                client, image, host_workspace, branch, task, agent_name)
 
         elapsed = time.monotonic() - job["started_at"]
         log.info("Job %s: done in %.0fs (exit=%d)", job_id[:8], elapsed, exit_code)
@@ -748,7 +692,7 @@ async def _run_job_background(job_id: str, task: str, agent_name: str,
         job["status"] = "completed" if exit_code == 0 else "failed"
         job["exit_code"] = exit_code
         job["output"] = (
-            f"{result}\n\n[{profile['label']} completed in {elapsed:.0f}s"
+            f"{result}\n\n[{agent_name} completed in {elapsed:.0f}s"
             f" | workspace: {workspace_path}{project_info}]{git_info}"
         )
         job["finished_at"] = time.monotonic()
@@ -771,33 +715,20 @@ async def run_task_async(task: str, workspace: str | None = None,
                          max_turns: int = 0,
                          system_prompt: str | None = None,
                          model: str | None = None,
+                         image: str | None = None,
                          llm_url: str | None = None,
                          api_key: str | None = None) -> str:
-    """Start a coding task asynchronously. Returns immediately with a job ID.
-
-    Args:
-        task: Natural language description of the coding task
-        workspace: Optional workspace directory path
-        project: Optional Gitea project name (auto-creates repo)
-        agent: Agent profile (see AGENT_PROFILES)
-        owner: Gitea repo owner (alternative to project)
-        repo: Gitea repo name (alternative to project)
-        branch: Git branch to work on (default: main)
-        max_turns: Max reasoning steps (0 = agent default)
-        system_prompt: Extra instructions prepended to the task
-        model: Model alias or GGUF filename (default: DEFAULT_MODEL env var)
-    """
-    if agent not in AGENT_PROFILES:
-        available = ", ".join(AGENT_PROFILES.keys())
-        return f"Error: Unknown agent '{agent}'. Available: {available}"
+    """Start a coding task asynchronously. Returns immediately with a job ID."""
+    if agent not in CLI_DRIVERS:
+        available = ", ".join(CLI_DRIVERS.keys())
+        return f"Error: Unknown CLI '{agent}'. Available: {available}"
 
     job_id = uuid.uuid4().hex[:12]
-    profile = AGENT_PROFILES[agent]
 
     _jobs[job_id] = {
         "status": "starting",
         "agent": agent,
-        "agent_label": profile["label"],
+        "agent_label": agent,
         "task": task[:200],
         "project": project or (f"{owner}/{repo}" if owner and repo else None),
         "branch": branch,
@@ -812,12 +743,12 @@ async def run_task_async(task: str, workspace: str | None = None,
     asyncio.create_task(_run_job_background(
         job_id, task, agent, workspace, project, owner, repo,
         branch, max_turns, system_prompt, model=model,
-        llm_url=llm_url, api_key=api_key))
+        image=image, llm_url=llm_url, api_key=api_key))
 
     project_info = project or (f"{owner}/{repo}" if owner and repo else "(none)")
     return (
         f"Job started: {job_id}\n"
-        f"Agent: {profile['label']}\n"
+        f"Agent: {agent}\n"
         f"Project: {project_info}\n"
         f"Branch: {branch}\n"
         f"\nCall check_agent_job('{job_id}') to poll for results."
@@ -843,28 +774,27 @@ async def run_task_and_wait(
 
     Args:
         task: Natural language task description
-        agent: Agent profile name (key in AGENT_PROFILES)
-        model: Model alias (resolved by _resolve_model)
-        mcp_ports_override: Override MCP ports (replaces profile default)
+        agent: CLI driver name (key in CLI_DRIVERS)
+        model: Model name (resolved by models_config)
+        mcp_ports_override: Override MCP ports
         project: Gitea project name (auto-creates repo if needed)
         branch: Git branch to work on
         max_turns: Max reasoning steps (0 = agent default)
         system_prompt: Extra instructions prepended to the task
         timeout: Max seconds to wait (0 = use AGENT_TIMEOUT from config)
     """
-    if agent not in AGENT_PROFILES:
-        available = ", ".join(AGENT_PROFILES.keys())
-        return f"Error: Unknown agent '{agent}'. Available: {available}"
+    if agent not in CLI_DRIVERS:
+        available = ", ".join(CLI_DRIVERS.keys())
+        return f"Error: Unknown CLI '{agent}'. Available: {available}"
 
     max_wait = timeout or config.AGENT_TIMEOUT
 
     job_id = uuid.uuid4().hex[:12]
-    profile = AGENT_PROFILES[agent]
 
     _jobs[job_id] = {
         "status": "starting",
         "agent": agent,
-        "agent_label": profile["label"],
+        "agent_label": agent,
         "task": task[:200],
         "project": project,
         "branch": branch,
@@ -905,6 +835,7 @@ async def run_task_fire(
     task: str,
     agent: str = "goose",
     model: str | None = None,
+    image: str | None = None,
     mcp_ports_override: list[int] | None = None,
     project: str | None = None,
     branch: str = "main",
@@ -912,16 +843,15 @@ async def run_task_fire(
     system_prompt: str | None = None,
 ) -> str:
     """Start a coding task in the background. Returns job_id immediately."""
-    if agent not in AGENT_PROFILES:
-        raise ValueError(f"Unknown agent '{agent}'. Available: {', '.join(AGENT_PROFILES)}")
+    if agent not in CLI_DRIVERS:
+        raise ValueError(f"Unknown CLI '{agent}'. Available: {', '.join(CLI_DRIVERS)}")
 
     job_id = uuid.uuid4().hex[:12]
-    profile = AGENT_PROFILES[agent]
 
     _jobs[job_id] = {
         "status": "starting",
         "agent": agent,
-        "agent_label": profile["label"],
+        "agent_label": agent,
         "task": task[:200],
         "project": project,
         "branch": branch,
@@ -936,7 +866,7 @@ async def run_task_fire(
     asyncio.create_task(_run_job_background(
         job_id, task, agent, None, project, None, None,
         branch, max_turns, system_prompt, model=model,
-        mcp_ports_override=mcp_ports_override))
+        image=image, mcp_ports_override=mcp_ports_override))
 
     return job_id
 
@@ -1017,13 +947,14 @@ def check_job(job_id: str) -> str:
 
 
 def list_agent_profiles() -> str:
-    """List available agent profiles and models."""
-    lines = ["Available agent profiles:\n"]
-    for name, profile in AGENT_PROFILES.items():
-        lines.append(f"  {name}: {profile['description']}")
-    lines.append("\nAvailable models (for local agents):")
-    for alias in MODEL_ALIASES:
-        lines.append(f"  {alias}: {_resolve_model(alias)}")
-    lines.append(f"\nDefault model: {cfg('DEFAULT_MODEL', 'devstral')}")
-    lines.append("LLM endpoint: " + _llm_host())
+    """List available CLI drivers and models."""
+    from . import roles as _roles
+    lines = ["Available roles:\n"]
+    for name in _roles.list_role_names():
+        role = _roles.get_role(name)
+        lines.append(f"  {name}: {role.get('description', '')}")
+    lines.append("\nAvailable models:")
+    for name, cfg_dict in models_config.list_models().items():
+        lines.append(f"  {name}: {cfg_dict['name']} @ {cfg_dict['url']}")
+    lines.append(f"\nCLI drivers: {', '.join(CLI_DRIVERS)}")
     return "\n".join(lines)
