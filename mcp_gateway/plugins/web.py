@@ -214,16 +214,13 @@ async def health_checks() -> list[tuple[str, bool]]:
     except ImportError:
         checks.append(("[INFO] Docker Playwright not installed", False))
 
-    # Preload folder
+    # Preload folder (informational, not counted as a service)
     preload_dir = config.PRELOAD_DIR
     if config.PRELOAD_ON_STARTUP and preload_dir.exists():
         file_count = sum(1 for f in preload_dir.rglob("*") if f.is_file() and not f.name.startswith("."))
         if file_count:
-            checks.append((f"[OK] Preload folder ({file_count} files)", True))
-        else:
-            checks.append(("[INFO] Preload folder empty", False))
-    else:
-        checks.append(("[INFO] No preload folder", False))
+            checks.append((f"  Preload: {file_count} document(s) to index", True))
+        # empty = nothing to report
 
     return checks
 

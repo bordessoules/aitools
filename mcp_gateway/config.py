@@ -70,7 +70,7 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080")
 # =============================================================================
 # LLM ENDPOINTS & MODELS
 # =============================================================================
-# All LLM configuration lives in config/models.yaml.
+# All LLM configuration lives in config/models/.
 # See mcp_gateway/models_config.py for the loader.
 # Use models_config.get_vision_model() and models_config.get_agent_model()
 # to resolve endpoints at runtime.
@@ -160,22 +160,8 @@ CHARS_PER_TOKEN = 4
 # =============================================================================
 # LLM SAMPLING PARAMETERS
 # =============================================================================
-# Read from .env - no defaults here to ensure explicit configuration.
-# These override whatever defaults the LLM wrapper (LM Studio, llama.cpp) uses.
-
-# Vision Model sampling - used for VLM pipeline and picture descriptions.
-# Set these to match your model's recommended sampling.
-# Tested presets:
-#   Qwen3-VL (2B/4B/8B): temp=0.1, top_p=0.8, top_k=20, presence_penalty=0.0, repetition_penalty=1.0
-#   LFM2.5-VL-1.6B:      temp=0.1, min_p=0.15, repetition_penalty=1.05
-VLM_TEMPERATURE = _env_float("VLM_TEMPERATURE")
-VLM_TOP_P = _env_float("VLM_TOP_P")
-VLM_TOP_K = _env_int("VLM_TOP_K")
-VLM_MIN_P = _env_float("VLM_MIN_P")
-VLM_PRESENCE_PENALTY = _env_float("VLM_PRESENCE_PENALTY")
-VLM_REPETITION_PENALTY = _env_float("VLM_REPETITION_PENALTY")
-# VLM_MAX_TOKENS removed — vLLM fills remaining context dynamically.
-# Callers pass explicit max_tokens when needed (e.g. Docling=4096, fetch=8000).
+# Vision model sampling is now per-model in config/models/*.yaml (sampling: section).
+# VLM_* env vars removed — edit the vision model's YAML file instead.
 
 # =============================================================================
 # BROWSER/PLAYWRIGHT
@@ -223,11 +209,11 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache"))
 CACHE_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
-# ROLES CONFIG
+# AGENTS CONFIG
 # =============================================================================
-# Role definitions for delegate_to_agent() — maps role names to agent profiles.
+# Agent definitions for delegate_to_agent() — one YAML per role in config/agents/.
 
-ROLES_FILE = Path(os.getenv("ROLES_FILE", "./config/roles.yaml"))
+AGENTS_DIR = Path(os.getenv("AGENTS_DIR", "./config/agents"))
 
 # =============================================================================
 # PRELOAD FOLDER
@@ -310,7 +296,7 @@ VIBE_IMAGE = os.getenv("VIBE_IMAGE", "mcp-vibe:latest")
 KIMI_IMAGE = os.getenv("KIMI_IMAGE", "mcp-kimi:latest")
 GOOSE_WORKSPACE = Path(os.getenv("GOOSE_WORKSPACE", "./workspace"))
 AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "600"))
-# Agent LLM config is now in config/models.yaml (defaults.agent)
+# Agent LLM config is now in config/models/ (defaults.agent)
 GOOSE_MCP_GATEWAY_URL = os.getenv("GOOSE_MCP_GATEWAY_URL", "http://gateway:8000")
 GOOSE_MEMORY_LIMIT = os.getenv("GOOSE_MEMORY_LIMIT", "2g")
 

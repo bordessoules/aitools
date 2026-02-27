@@ -44,7 +44,7 @@ async def startup_health_check():
     # Chat UI (external service, not a plugin)
     try:
         async with httpx.AsyncClient(timeout=3) as client:
-            resp = await client.get(f"http://localhost:{config.CHAT_UI_PORT}")
+            resp = await client.get(f"http://chat-ui:{config.CHAT_UI_PORT}")
             if resp.status_code == 200:
                 checks.append(("[OK] Chat UI", True))
             else:

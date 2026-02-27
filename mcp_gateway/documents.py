@@ -32,7 +32,7 @@ except ImportError:
     MARKITDOWN_AVAILABLE = False
 
 
-def _build_docling_options() -> dict:
+def _build_docling_options(do_ocr: bool = True) -> dict:
     """
     Build Docling conversion options based on pipeline mode.
 
@@ -85,9 +85,10 @@ def _build_docling_options() -> dict:
             }
 
     else:
-        # Standard pipeline: EasyOCR + Tableformer
-        options["do_ocr"] = True
-        options["ocr_engine"] = config.DOCLING_OCR_ENGINE
+        # Standard pipeline: layout + table structure (OCR only for scanned docs)
+        options["do_ocr"] = do_ocr
+        if do_ocr:
+            options["ocr_engine"] = config.DOCLING_OCR_ENGINE
         options["table_mode"] = "accurate"
         options["do_table_structure"] = True
 
@@ -101,6 +102,7 @@ def _build_docling_options() -> dict:
             "timeout": config.TIMEOUT_LLM,
             "headers": build_auth_headers(),
             "prompt": "Describe this image in detail, including any text, diagrams, charts, or visual elements.",
+            "concurrency": config.DOCLING_VLM_CONCURRENCY,
         }
 
     return options
@@ -310,8 +312,6 @@ async def fetch_and_cache(url: str) -> Doc | None:
 async def _fetch_with_docling(url: str) -> Doc | None:
     """Fetch document using Docling service."""
     url_base = config.docling_url()
-
-    # Build options based on pipeline mode (vlm or standard)
     options = _build_docling_options()
 
     try:

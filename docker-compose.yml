@@ -41,14 +41,14 @@ services:
       - DOCLING_URL=http://docling-cpu:5001
       - DOCLING_GPU_URL=http://docling-gpu:5001
 
-      # Vision API (for picture descriptions and web extraction)
-      - VISION_API_URL=${VISION_API_URL:-}
-      - VISION_API_KEY=${VISION_API_KEY:-not-needed}
-      - VISION_MODEL=${VISION_MODEL:-qwen3-vl-4b}
+      # LLM model & agent config (folder-based, mounted as volumes below)
+      - MODELS_DIR=/app/config/models
+      - AGENTS_DIR=/app/config/agents
 
       # Docling configuration
       - USE_DOCLING_GPU=${USE_DOCLING_GPU:-false}
       - DOCLING_PIPELINE=${DOCLING_PIPELINE:-standard}
+      - DOCLING_VLM_CONCURRENCY=${DOCLING_VLM_CONCURRENCY:-1}
       - DOCLING_DO_PICTURE_DESCRIPTION=${DOCLING_DO_PICTURE_DESCRIPTION:-true}
 
       # Browser settings
@@ -87,13 +87,6 @@ services:
       - GITEA_ADMIN_PASSWORD=${GITEA_ADMIN_PASSWORD:-goose-gitea-local}
       - GITEA_ADMIN_EMAIL=${GITEA_ADMIN_EMAIL:-goose@localhost}
 
-      # LLM inference (llamaswap auto-swaps models by name)
-      - LLM_HOST=${LLM_HOST:-http://host.docker.internal:8085}
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-devstral}
-      - DEVSTRAL_MODEL=${DEVSTRAL_MODEL:-Devstral-Small-2-24B-Instruct-2512-IQ4_XS-4.04bpw.gguf}
-      - QWEN_CODER_MODEL=${QWEN_CODER_MODEL:-Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf}
-      - QWEN3_NEXT_MODEL=${QWEN3_NEXT_MODEL:-Qwen3-Coder-Next-REAM-MXFP4_MOE.gguf}
-
       # Chat UI
       - CHAT_UI_PORT=${CHAT_UI_PORT:-3000}
     volumes:
@@ -106,8 +99,9 @@ services:
       - ./workspace:/app/workspace
       # Shared auth directory (gateway writes Gitea token here for gitea-mcp)
       - ./auth:/app/auth
-      # Role definitions (hot-reload without rebuild)
-      - ./config/roles.yaml:/app/config/roles.yaml:ro
+      # Model & agent config (hot-reload without rebuild)
+      - ./config/models:/app/config/models:ro
+      - ./config/agents:/app/config/agents:ro
     depends_on:
       searxng:
         condition: service_healthy
@@ -115,6 +109,12 @@ services:
         condition: service_healthy
         required: false
       gitea:
+        condition: service_healthy
+        required: false
+      docling-cpu:
+        condition: service_healthy
+        required: false
+      docling-gpu:
         condition: service_healthy
         required: false
     networks:
@@ -191,6 +191,9 @@ services:
       - cpu
     environment:
       - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=true
+      - DOCLING_SERVE_MAX_SYNC_WAIT=600
+      - DOCLING_SERVE_ENG_LOC_NUM_WORKERS=4
+      - OMP_NUM_THREADS=12  # Set to number of physical CPU cores (not threads)
     volumes:
       # Persist HF model downloads (including Granite-258M for VLM pipeline)
       - docling-hf-cache:/opt/app-root/src/.cache/huggingface/hub
